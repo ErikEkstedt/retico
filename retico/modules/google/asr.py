@@ -8,8 +8,10 @@ from retico.core import abstract
 from retico.core.text.common import SpeechRecognitionIU
 from retico.core.audio.common import AudioIU
 from google.cloud import speech as gspeech
-from google.cloud.speech import enums
-from google.cloud.speech import types
+import time
+
+# from google.cloud.speech import enums
+# from google.cloud.speech import types
 
 
 class GoogleASRModule(abstract.AbstractModule):
@@ -120,25 +122,68 @@ class GoogleASRModule(abstract.AbstractModule):
 
     def setup(self):
         self.client = gspeech.SpeechClient()
-        config = types.RecognitionConfig(
-            encoding=enums.RecognitionConfig.AudioEncoding.LINEAR16,
+        config = gspeech.RecognitionConfig(
+            encoding=gspeech.RecognitionConfig.AudioEncoding.LINEAR16,
             sample_rate_hertz=self.rate,
             language_code=self.language,
         )
-        self.streaming_config = types.StreamingRecognitionConfig(
+        self.streaming_config = gspeech.StreamingRecognitionConfig(
             config=config, interim_results=True
         )
 
+    # def prepare_run(self):
+    #     print("Setup prepare_run")
+    #     requests = (
+    #         gspeech.StreamingRecognizeRequest(audio_content=content)
+    #         for content in self._generator()
+    #     )
+    #     self.responses = self.client.streaming_recognize(
+    #         self.streaming_config, requests
+    #     )
+    #     t = threading.Thread(target=self._produce_predictions_loop)
+    #     t.start()
+
     def prepare_run(self):
-        requests = (
-            types.StreamingRecognizeRequest(audio_content=content)
-            for content in self._generator()
-        )
-        self.responses = self.client.streaming_recognize(
-            self.streaming_config, requests
-        )
-        t = threading.Thread(target=self._produce_predictions_loop)
+        t = threading.Thread(target=self.request_thread)
         t.start()
 
+    def request_thread(self):
+        requests = None
+        while True:
+            try:
+
+                if requests is not None:
+                    time.sleep(1.0)
+                    continue
+
+                def _produce_predictions_loop():
+                    for response in self.responses:
+                        try:
+                            p, t, s, c, f = self._extract_results(response)
+                            if p:
+                                output_iu = self.create_iu(self.latest_input_iu)
+                                self.latest_input_iu = None
+                                output_iu.set_asr_results(p, t, s, c, f)
+                                if f:
+                                    output_iu.committed = True
+                                self.append(output_iu)
+                        except:
+                            requests = None
+
+                requests = (
+                    gspeech.StreamingRecognizeRequest(audio_content=content)
+                    for content in self._generator()
+                )
+                self.responses = self.client.streaming_recognize(
+                    self.streaming_config, requests
+                )
+
+                _produce_predictions_loop()
+
+            except:
+                requests = None
+                print("Google Thread Died. Attempting to Restart.")
+
     def shutdown(self):
+        print("Shutdown google")
         self.audio_buffer.put(None)
