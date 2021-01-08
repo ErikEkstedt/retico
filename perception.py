@@ -4,17 +4,17 @@ Some sample code to play with in order to understand:
 """
 
 from retico.core import abstract
-from retico.core.text.common import SpeechRecognitionIU, GeneratedTextIU
+from retico.core.audio.common import AudioIU
 from retico.core.audio.io import (
     MicrophoneModule,
     AudioDispatcherModule,
     StreamingSpeakerModule,
 )
-from retico.modules.google.asr import GoogleASRModule
-from retico.core.text.asr import IncrementalizeASRModule, TextDispatcherModule
 from retico.core.debug.general import CallbackModule
-from retico.modules.google.tts_new import GoogleTTSModule
+from retico.core.text.asr import IncrementalizeASRModule, TextDispatcherModule
 from retico.modules.amazon.tts import AmazonTTSModule
+from retico.modules.google.tts_new import GoogleTTSModule
+from retico.modules.google.asr import GoogleASRModule
 
 from os import environ
 
@@ -24,76 +24,53 @@ environ[
 ] = "/home/erik/projects/data/GOOGLE_SPEECH_CREDENTIALS.json"
 
 
-class ModuleBase(object):
-    def _run(self):
-        raise NotImplementedError()
-
-    def _stop(self):
-        raise NotImplementedError()
-
-    def run(self):
-        print(f"Running: {self.__class__.__name__}")
-        self._run()
-        input()
-        self._stop()
-        print(f"Stopped: {self.__class__.__name__}")
-
-
-class CustomModule(abstract.AbstractConsumingModule):
-    """A debug module that prints the IUs that are coming in."""
+# Todo
+class AudioVAD(abstract.AbstractModule):
+    """A module that produces IUs containing audio signals that are captures by
+    a microphone."""
 
     @staticmethod
     def name():
-        return "Custom Module"
+        return "AudioVAD Module"
 
     @staticmethod
     def description():
-        return "A consuming module that displays IU infos in the console."
+        return "A Module that detects voice activity in the audio only passes time based IPU audio segments forward"
 
     @staticmethod
     def input_ius():
-        return [abstract.IncrementalUnit]
-
-    def process_iu(self, input_iu):
-        print("Debug")
-        print("text: ", input_iu.text)
-        print("stability: ", input_iu.stability)
-        if hasattr(input_iu, "committed"):
-            print("committed: ", input_iu.committed)
-        if hasattr(input_iu, "finality"):
-            print("finality: ", input_iu.finality)
-
-
-class WordTrigger(abstract.AbstractModule):
-    """A debug module that prints the IUs that are coming in."""
-
-    @staticmethod
-    def name():
-        return "Word Trigger Module"
-
-    @staticmethod
-    def description():
-        return "Triggers on a specific word"
-
-    @staticmethod
-    def input_ius():
-        return [SpeechRecognitionIU]
+        return [AudioIU]
 
     @staticmethod
     def output_iu():
-        return GeneratedTextIU
+        # see what rr-sds did for vectors
+        return AudioIU
 
-    def __init__(self, word_trigger="elephant", **kwargs):
+    def __init__(
+        self, ipu_threshold, chunk_size, sample_rate=16000, bytes_per_sample=2, **kwargs
+    ):
+        """
+        Initialize the Microphone Module.
+
+        Args:
+            chunk_size (int): The number of frames that should be stored in one
+                AudioIU
+            rate (int): The frame rate of the recording
+            sample_width (int): The width of a single sample of audio in bytes.
+        """
         super().__init__(**kwargs)
-        self.word_trigger = word_trigger
+        self.ipu_threshold = ipu_threshold
+        self.chunk_size = chunk_size
+        self.sample_rate = sample_rate
+        self.bytes_per_sample = bytes_per_sample
 
+    # ??
     def process_iu(self, input_iu):
-        if self.word_trigger in input_iu.text:
-            output_iu = self.create_iu()
-            output_iu.text = f"I am triggered. Heard the word: {self.word_trigger}"
-            return output_iu
-        else:
-            return None
+        self.audio_buffer.put(input_iu.raw_audio)
+        if not self.latest_input_iu:
+            self.latest_input_iu = input_iu
+        print(self.audiobuffer)
+        return None
 
 
 class Hearing(object):
@@ -223,7 +200,27 @@ class Speech(object):
         self.streaming_speaker.stop()
 
 
+class ModuleBase(object):
+    def _run(self):
+        raise NotImplementedError()
+
+    def _stop(self):
+        raise NotImplementedError()
+
+    def run(self):
+        print(f"Running: {self.__class__.__name__}")
+        self._run()
+        input()
+        self._stop()
+        print(f"Stopped: {self.__class__.__name__}")
+
+
 class RepeatAgent(ModuleBase):
+    """
+    Collects the speech text and when the ASR returns the finality property (the end of turn according to the ASR) the
+    TTS module repeat what what said.
+    """
+
     def __init__(
         self,
         sample_rate=16000,
@@ -244,7 +241,6 @@ class RepeatAgent(ModuleBase):
 
         # Brain/DM/TurnTaking =========================================
         self.text_dispatcher = TextDispatcherModule()
-        # self.asr_print = CustomModule()
 
         # Speech/Output ===============================================
         self.speech = Speech(
@@ -286,57 +282,6 @@ class RepeatAgent(ModuleBase):
         self.speech.stop_components()
 
 
-class SDSAgent(ModuleBase):
-    def __init__(
-        self, sample_rate=16000, chunk_time=0.01, bytes_per_sample=2, debug=False
-    ):
-        self.chunk_time = chunk_time
-        self.sample_rate = sample_rate
-        self.chunk_size = int(chunk_time * sample_rate)
-        self.bytes_per_sample = bytes_per_sample
-        self.debug = debug
-
-        # Hearing =======================================================
-        self.hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=False)
-
-        # Brain/DM/TurnTaking =========================================
-        self.text_dispatcher = TextDispatcherModule()
-        # self.asr_print = CustomModule()
-
-        # Speech/Output ===============================================
-        self.speech = Speech(chunk_time, sample_rate, bytes_per_sample, debug=debug)
-
-        self._connect_components()
-
-    def _connect_components(self):
-        """
-        Connects all the components (subscribe)
-        """
-        # Hearing
-        self.hearing.connect_components()
-
-        # DM/Brain
-        self.hearing.asr.subscribe(
-            self.text_dispatcher
-        )  # connect whats been heard to text dispatcher
-        self.text_dispatcher.subscribe(
-            self.speech.tts
-        )  # connect text dispatcher with speech
-
-        # Speech
-        self.speech.connect_components()  # connect speech
-
-    def _run(self):
-        self.hearing.run_components()
-        self.text_dispatcher.run()
-        self.speech.run_components()
-
-    def _stop(self):
-        self.hearing.stop_components()
-        self.text_dispatcher.stop()
-        self.speech.stop_components()
-
-
 if __name__ == "__main__":
 
     sample_rate = 16000
@@ -345,7 +290,6 @@ if __name__ == "__main__":
     print("sample_rate: ", sample_rate)
     print("chunk_time: ", chunk_time)
     print("bytes_per_sample: ", bytes_per_sample)
-
     # agent = RepeatAgent(
     #     sample_rate, chunk_time, bytes_per_sample, tts_client="google", debug=True
     # )
@@ -355,5 +299,4 @@ if __name__ == "__main__":
         sample_rate, chunk_time, bytes_per_sample, tts_client="amazon", debug=True
     )
     agent.run()
-
     # repeat_demo()
