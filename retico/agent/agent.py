@@ -2,6 +2,8 @@ import time
 import threading
 import requests
 import json
+import re
+import random
 
 from retico.core.abstract import AbstractModule, IncrementalUnit
 from retico.core.audio.common import DispatchedAudioIU
@@ -113,8 +115,7 @@ class HistoryTracker:
         return self.turns
 
 
-# TODO
-class EOT(AbstractModule):
+class BCModule(AbstractModule):
     @staticmethod
     def name():
         return "EOT Turn Taking Module"
@@ -129,7 +130,34 @@ class EOT(AbstractModule):
 
     @staticmethod
     def output_iu():
-        return EndOfTurnIU
+        return GeneratedTextIU
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.current_utterance = ""
+        self.bc_thresh_min = 0.1
+        self.bc_thresh_max = 0.4
+        self.bc_samples = ["yeah"]
+        self.last_time = time.time()
+        self.wait_time = 1.0
+
+    def process_iu(self, input_iu):
+        if input_iu.text == "":
+            print("empty input")
+        self.current_utterance += " " + input_iu.text.strip()
+        # self.current_utterance = re.sub("\s\s+", "", self.current_utterance.strip())
+        probability = get_eot(self.current_utterance)
+        # print(f"EOT: {self.current_utterance} = {round(probability, 3)*100}%")
+        if input_iu.committed:
+            self.current_utterance = ""
+        elif self.bc_thresh_min < probability < self.bc_thresh_max:
+            now = time.time()
+            if now - self.last_time > self.wait_time:
+                self.last_time = now
+                output_iu = self.create_iu(None)
+                output_iu.payload = random.choice(self.bc_samples)
+                output_iu.dispatch = True
+                return output_iu
 
 
 class BaseAgent(AbstractModule):
@@ -235,6 +263,7 @@ class TurnTakingAgent(BaseAgent):
     def listen(self, input_iu):
         if input_iu.final:
             self.history.add_turn_utterance(input_iu.text, speaker="other")
+            print("\t\tOther: ", input_iu.text)
             if "goodbye" in input_iu.text:
                 self.next_response = "Goodbye."
                 self.shutdown()
@@ -244,12 +273,14 @@ class TurnTakingAgent(BaseAgent):
         return None
 
     def start_speaking(self):
+        self.history.add_turn_utterance(self.next_response, speaker="me")
+        # print(self.history)
+        print("Me: ", self.next_response)
+
         output_iu = self.create_iu(None)
         output_iu.payload = self.next_response
         output_iu.dispatch = True
         self.append(output_iu)
-        self.history.add_turn_utterance(self.next_response, speaker="me")
-        print(self.history)
 
     def speak(self):
         if not self.dialogue_started:
@@ -284,6 +315,7 @@ class TurnTakingAgent(BaseAgent):
             self.reset_random()
         self.me.is_active = input_iu.is_dispatching
         self.me.completion = input_iu.completion
+        print("self observe: ", input_iu)
 
     def silence(self):
         output_iu = self.create_iu(None)
@@ -358,24 +390,32 @@ def run_agent():
     from perception import Hearing, Speech
 
     sample_rate = 16000
-    chunk_time = 0.05
+    chunk_time = 0.01
     bytes_per_sample = 2
     print("sample_rate: ", sample_rate)
     print("chunk_time: ", chunk_time)
     print("bytes_per_sample: ", bytes_per_sample)
 
     hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=False)
-    speech = Speech(chunk_time, sample_rate, bytes_per_sample, tts_client="amazon")
+    speech = Speech(0.1, sample_rate, bytes_per_sample, tts_client="amazon")
     agent = TurnTakingAgent()
+    # eot = EOTModule()
+    bc = BCModule()
 
     hearing.connect_components()
     hearing.asr.subscribe(agent)
+    # hearing.iasr.subscribe(eot)
+    hearing.iasr.subscribe(bc)
+    bc.subscribe(speech.tts)
+
     agent.subscribe(speech.tts)
     speech.connect_components()
 
     hearing.run_components()
     agent.dialogue_manager.run()
     speech.run_components()
+    # eot.run()
+    bc.run()
 
     agent.setup()
     agent.prepare_run()  #  starts a thread and the dialogue loop
@@ -386,6 +426,9 @@ def run_agent():
     hearing.stop_components()
     agent.dialogue_manager.stop()
     speech.stop_components()
+
+    # eot.stop()
+    bc.stop()
 
 
 if __name__ == "__main__":

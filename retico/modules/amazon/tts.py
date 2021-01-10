@@ -33,6 +33,7 @@ class TTSPolly(object):
         speaking_rate=None,
         engine="neural",
         audio_output_format="pcm",
+        output_word_times=False,
     ):
         self.sample_rate = str(sample_rate)
         self.audio_output_format = audio_output_format
@@ -40,6 +41,7 @@ class TTSPolly(object):
         self.speaking_rate = speaking_rate
         self.language_code = language_code
         self.engine = engine
+        self.output_word_times = output_word_times
 
         self.session = Session()
         self.client = self.session.client("polly")
@@ -113,18 +115,22 @@ class TTSPolly(object):
 
         with closing(response_audio["AudioStream"]) as stream:
             raw_audio = stream.read()
-        # response_marks = self.client.synthesize_speech(
-        #     Engine=self.engine,
-        #     LanguageCode=voice["LanguageCode"],
-        #     Text=text,
-        #     TextType="ssml",
-        #     OutputFormat="json",
-        #     VoiceId=voice["Id"],
-        #     SpeechMarkTypes=["word"],
-        # )
-        # words, starts, ends = self.response_marks_reader(response_marks)
-        # return words, starts, ends, response_audio["AudioStream"]
-        return raw_audio
+
+        # add timing info of words
+        if self.output_word_times:
+            response_marks = self.client.synthesize_speech(
+                Engine=self.engine,
+                LanguageCode=self.voice["LanguageCode"],
+                Text=text,
+                TextType="ssml",
+                OutputFormat="json",
+                VoiceId=self.voice["Id"],
+                SpeechMarkTypes=["word"],
+            )
+            words, starts, ends = self.response_marks_reader(response_marks)
+            return words, starts, ends, raw_audio
+        else:
+            return None, None, None, raw_audio
 
 
 class AmazonTTSModule(abstract.AbstractModule):
@@ -146,19 +152,31 @@ class AmazonTTSModule(abstract.AbstractModule):
     def output_iu():
         return SpeechIU
 
-    def __init__(self, sample_rate=16000, bytes_per_sample=2, caching=True, **kwargs):
+    def __init__(
+        self,
+        sample_rate=16000,
+        bytes_per_sample=2,
+        caching=True,
+        output_word_times=False,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self.caching = caching
-        self.tts = TTSPolly(sample_rate=sample_rate)
+        self.tts = TTSPolly(
+            sample_rate=sample_rate, output_word_times=output_word_times
+        )
         self.bytes_per_sample = bytes_per_sample
         self.sample_rate = self.tts.sample_rate
 
     def process_iu(self, input_iu):
         output_iu = self.create_iu(input_iu)
-        raw_audio = self.tts.tts(input_iu.get_text())
+        words, starts, ends, raw_audio = self.tts.tts(input_iu.get_text())
         nframes = len(raw_audio) / self.bytes_per_sample
         output_iu.set_audio(raw_audio, nframes, self.sample_rate, self.bytes_per_sample)
         output_iu.dispatch = input_iu.dispatch
+        output_iu.words = words
+        output_iu.starts = starts
+        output_iu.ends = ends
         return output_iu
 
 
