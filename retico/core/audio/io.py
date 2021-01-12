@@ -152,21 +152,22 @@ class SpeakerModule(abstract.AbstractConsumingModule):
     def setup(self):
         """Set up the speaker for speaking...?"""
         p = self._p
-        if self.use_speaker == "left":
-            stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(0, -1))
-        elif self.use_speaker == "right":
-            stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(-1, 0))
-        else:
-            stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(0, 0))
+        # if self.use_speaker == "left":
+        #     stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(0, -1))
+        # elif self.use_speaker == "right":
+        #     stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(-1, 0))
+        # else:
+        #     stream_info = pyaudio.PaMacCoreStreamInfo(channel_map=(0, 0))
 
         self.stream = p.open(
             format=p.get_format_from_width(self.sample_width),
             channels=CHANNELS,
             rate=self.rate,
             input=False,
-            output_host_api_specific_stream_info=stream_info,
+            # output_host_api_specific_stream_info=stream_info,
             output=True,
         )
+        self.stream.start_stream()
 
     def shutdown(self):
         """Close the audio stream."""
