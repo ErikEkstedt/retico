@@ -4,6 +4,7 @@ from retico.core.audio.io import (
     AudioDispatcherModule,
     StreamingSpeakerModule,
 )
+from retico.core.text.common import GeneratedTextIU
 from retico.modules.amazon.tts import AmazonTTSModule
 from retico.modules.google.tts_new import GoogleTTSModule
 
@@ -23,6 +24,27 @@ Metrics
 
 
 """
+
+
+class TTSDummy(AbstractConsumingModule):
+    @staticmethod
+    def name():
+        return "TTSDummy Module"
+
+    @staticmethod
+    def description():
+        return "Print out values instead of actually producing TTS"
+
+    @staticmethod
+    def input_ius():
+        return [GeneratedTextIU]
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+    def process_iu(self, input_iu):
+        print("TTS:")
+        print("\ttext: ", len(input_iu.text))
 
 
 class TTSDebug(AbstractConsumingModule):
@@ -141,6 +163,8 @@ class Speech(object):
             self.tts_debug = TTSDebug()
             self.audio_dispatcher_debug = AudioDispatcherDebug()
 
+        self.connect_components()
+
     def connect_components(self):
         self.tts.subscribe(self.audio_dispatcher)
         self.audio_dispatcher.subscribe(self.streaming_speaker)
@@ -190,9 +214,8 @@ def test_speech():
 
     text = TextDispatcherModule()
 
-    speech.connect_components()
+    # speech.connect_components()
     text.subscribe(speech.tts)
-
     speech.run_components()
     text.run()
 

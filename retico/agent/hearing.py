@@ -8,6 +8,7 @@ from retico.core.text.asr import IncrementalizeASRModule
 from retico.core.text.common import SpeechRecognitionIU
 from retico.modules.google.asr import GoogleASRModule
 
+from retico.agent.vad import VADModule  # , VADDebug
 from retico.agent.utils import Color as C
 
 from os import environ
@@ -21,8 +22,8 @@ Metrics
 -------
 
 * We want to how long the silences are
-    - Use a VAD to incrementally tell the silence duration
-    - Use sensible interval i.e. 0.05, 0.1, 0.15, 0.2, etc (seconds)
+    - [x] Use a VAD to incrementally tell the silence duration
+    - [ ] Use sensible interval i.e. 0.05, 0.1, 0.15, 0.2, etc (seconds)
 
 These metrics may then be used by EOTModules & BCModules to tell whether the incomming speech is complete or if some
 reaction is plausable.
@@ -33,6 +34,12 @@ Thoughts
     - When debuggin we see many more prints from the ASR module than that of the IASR module. It lags significantly
       behind...
     - When do we need the IASR module?
+
+hearing = Hearing()
+hearing.in_mic # microphone
+hearing.vad # vad-component
+hearing.asr # asr-component
+hearing.iasr # incremental-asr-component
 """
 
 
@@ -109,6 +116,7 @@ class Hearing(object):
             rate=self.sample_rate,
             sample_width=self.bytes_per_sample,
         )
+        self.vad = VADModule(chunk_time=chunk_time, sample_rate=sample_rate, mode=3)
         self.asr = GoogleASRModule(
             language=language,
             nchunks=nchunks,  # m chunks to trigger a new prediction
@@ -121,8 +129,10 @@ class Hearing(object):
         if self.debug:
             # self.iasr_debug = ASRDebugModule(incremental=True)
             self.asr_debug = ASRDebugModule()
+            # self.vad_debug = VADDebug()
 
         logging.info(f"{self.name}: Initialized @ {time.time()}")
+        self.connect_components()
 
     @property
     def name(self):
@@ -141,10 +151,13 @@ class Hearing(object):
 
     def connect_components(self):
         self.in_mic.subscribe(self.asr)
+        self.in_mic.subscribe(self.vad)
         self.asr.subscribe(self.iasr)
         if self.debug:
             # self.iasr.subscribe(self.iasr_debug)
             self.asr.subscribe(self.asr_debug)
+            # self.vad.subscribe(self.vad_debug)
+
         logging.info(f"{self.name}: Connected Components")
 
     def setup(self):
@@ -155,22 +168,26 @@ class Hearing(object):
 
     def run_components(self, run_setup=True):
         self.in_mic.run(run_setup=run_setup)
+        self.vad.run(run_setup=run_setup)
         self.asr.run(run_setup=run_setup)
         self.iasr.run(run_setup=run_setup)
         if self.debug:
             # self.iasr_debug.run(run_setup=run_setup)
             self.asr_debug.run(run_setup=run_setup)
+            # self.vad_debug.run(run_setup=run_setup)
         logging.info(
             f"{self.name}: run_components (run_setup={run_setup}) @ {time.time()}"
         )
 
     def stop_components(self):
         self.in_mic.stop()
+        self.vad.stop()
         self.asr.stop()
         self.iasr.stop()
         if self.debug:
             # self.iasr_debug.stop()
             self.asr_debug.stop()
+            # self.vad_debug.stop()
         logging.info(f"{self.name}: stop_components @ {time.time()}")
 
 
@@ -186,17 +203,13 @@ def test_hearing():
         debug=True,
     )
     print(hearing)
-    hearing.connect_components()
+    # hearing.connect_components()
     hearing.run_components()
     try:
         input()
     except KeyboardInterrupt:
         pass
     hearing.stop_components()
-
-
-def test_vad():
-    pass
 
 
 if __name__ == "__main__":
