@@ -10,6 +10,8 @@ from retico.core.audio.io import SpeakerModule
 from retico.core.text.common import SpeechRecognitionIU
 
 from retico.agent.vad import VadIU
+from retico.agent.utils import Color as C
+
 
 URL_TRP = "http://localhost:5000/trp"
 
@@ -45,7 +47,7 @@ class BackChannelModule(AbstractConsumingModule):
         bc_trp_thresh_min=0.1,
         bc_trp_thresh_max=0.4,
         vad_time_min=0.1,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(**kwargs)
         self.cooldown = cooldown
@@ -80,6 +82,8 @@ class BackChannelModule(AbstractConsumingModule):
             trp = self.get_eot(input_iu.text)
             if self.bc_trp_thresh_min <= trp <= self.bc_trp_thresh_max:
                 self.trp_clear = True
+                self.trp_utterance = input_iu.text
+                self.trp = trp
             else:
                 self.trp_clear = False
         else:
@@ -99,9 +103,11 @@ class BackChannelModule(AbstractConsumingModule):
     def speak(self):
         if self.vad_time_clear and self.trp_clear:
             if time.time() - self.bc_last_time > self.cooldown:
-                print("===========")
-                print("BACKCHANNEL")
-                print("===========")
+                print(
+                    C.cyan
+                    + f"BACKCHANNEL {round(self.trp, 2)}: {self.trp_utterance}"
+                    + C.end
+                )
                 output_iu = AudioIU
                 output_iu.raw_audio = self.backchannel_audio
                 self.speaker.process_iu(output_iu)

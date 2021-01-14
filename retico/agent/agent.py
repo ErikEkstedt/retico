@@ -24,33 +24,23 @@ The agent that is actually conducting a conversation.
 The starting point is the repeat agent which listens, and remember, what is being said and upon finality from the ASR
 starts repeating what was said.
 
-1. Make the agent pause what it is saying if the user starts talking during the utterance
-2. Make the agent interrupt the user if they talk for say longer than 2 seconds
+
+TurnTakingModule
+* Continuous
+    * listen_self
+    * listen_other
+* handle_vad
+* Actions
+    * start_speaking
+        - save self-utterance here?
+    * silence
 
 
-Create a simple REST-server for TurnGPT. That can return either simply the TRP for each word recieved along with the
-most likely word. Or to actually project in the future and return the most likely future (rank).
 """
 
 URL_SAMPLE = "http://localhost:5000/sample"
 URL_EOT = "http://localhost:5000/eot"
 URL_TRP = "http://localhost:5000/trp"
-
-
-def get_sampled_response(text):
-    # json_data = {"text": ["Hello there, how can I help you?", "I want to eat food."]}
-    json_data = {"text": text}
-    response = requests.post(URL_SAMPLE, json=json_data)
-    d = json.loads(response.content.decode())
-    return d["response"]
-
-
-def get_eot(text):
-    # json_data = {"text": ["Hello there, how can I help you?", "I want to eat food."]}
-    json_data = {"text": text}
-    response = requests.post(URL_EOT, json=json_data)
-    d = json.loads(response.content.decode())
-    return d["eot"]
 
 
 class SpeakerState:
@@ -63,9 +53,40 @@ class SpeakerState:
         """
         self.utter_start = 0
         self.utter_end = 0
+        self.utter_start_dispatch = 0
+        self.utter_end_dispatch = 0
         self.dialogue_started = False
         self.is_active = False
         self.completion = 0.0
+
+        self.utterance = ""
+        self.audio = None
+        self.loop_states = []
+
+    def reset(self):
+        self.utter_start = 0
+        self.utter_end = 0
+        self.utter_start_dispatch = 0
+        self.utter_end_dispatch = 0
+        self.dialogue_started = False
+        self.is_active = False
+        self.completion = 0.0
+
+        self.utterance = ""
+        self.audio = None
+        self.loop_states = []
+
+    def to_dict(self):
+        return {
+            "utter_start": self.utter_start,
+            "utter_end": self.utter_end,
+            "utter_start_dispatch": self.utter_start_dispatch,
+            "utter_end_dispatch": self.utter_end_dispatch,
+            "completion": self.completion,
+            "utterance": self.utterance,
+            "audio": self.audio,
+            "loop_states": self.loop_states,
+        }
 
     def __repr__(self):
         rep = ""
@@ -101,16 +122,22 @@ class HistoryTracker:
     def __init__(self):
         self.turns = []
         self.speakers = []
+        self.states = []
 
     def reset(self):
         self.turns = []
         self.speakers = []
 
+    def add_state(self, state, speaker):
+        s = state.to_dict()
+        s["speaker"] = speaker
+        self.states.append(s)
+
     def add_turn_utterance(self, text, speaker):
         self.turns.append(text)
         self.speakers.append(speaker)
 
-    def __repr__(self):
+    def get_dialog(self):
         s = "History"
         for turn, speaker in zip(self.turns, self.speakers):
             if speaker == "me":
@@ -118,6 +145,9 @@ class HistoryTracker:
             else:
                 s += "\n\t\tOther: " + turn
         return s
+
+    def __repr__(self):
+        return self.states
 
     def __len__(self):
         return len(self.turns)
@@ -127,7 +157,7 @@ class HistoryTracker:
 
 
 class TurnTakingBase(AbstractModule):
-    SLEEP_TIME = 0.05
+    SLEEP_TIME = 0.1
     EVENT_SILENCE = "silence"
 
     @staticmethod
@@ -137,6 +167,47 @@ class TurnTakingBase(AbstractModule):
     @staticmethod
     def output_iu():
         return GeneratedTextIU
+
+    def __init__(
+        self,
+        other_active_silence_time=0.1,
+        first_utterance=True,
+        verbose=False,
+        **kwargs,
+    ):
+        """Initializes the class with the flag of wether the agent should start
+        the conversation or wait until the interlocutor starts the conversation.
+
+        Args:
+            first_utterance (bool): Whether this agent starts the conversation
+        """
+        super().__init__(**kwargs)
+        self.first_utterance = first_utterance
+        self.dialogue_finished = False
+        self.dialogue_started = False
+        self.verbose = verbose
+
+        self.history = HistoryTracker()
+        self.me = SpeakerState()
+        self.other = SpeakerState()
+        self.current_utterance = ""  # stored utterance if we do not which to take the turn even with asr.final=True
+        self.last_vad_is_speaking = True
+
+        # EOT/turn-taking
+        self.eot_prob_min = 0.1
+        self.other_active_silence_time = other_active_silence_time
+
+        self.initial_utterance = "Hello there, how can I help you?"
+        self.suspended = False
+
+    def process_iu(self, input_iu):
+        if isinstance(input_iu, SpeechRecognitionIU):
+            self.listen_other(input_iu)
+        elif isinstance(input_iu, VadIU):
+            self.handle_vad(input_iu)
+        elif isinstance(input_iu, DispatchedAudioIU):
+            self.listen_self(input_iu)
+        return None
 
     def setup(self):
         """Sets the dialogue_finished flag to false. This may be overwritten
@@ -157,13 +228,9 @@ class TurnTakingBase(AbstractModule):
         This method is used in the begining of the dialogue to avoid strange
         behavior when no utterance has preceeded.
         """
-        now = time.time()
-        self.me.utter_start = now
-        self.me.utter_end = now
-        self.other.utter_start = now
-        self.other.utter_end = now
+        self.me.reset()
+        self.other.reset()
         self.history.reset()
-        self.dialogue_started = False
         self.dialogue_finished = False
 
     def shutdown(self):
@@ -226,26 +293,50 @@ class TurnTakingBase(AbstractModule):
             input_iu (DispatchedAudioIU): The dispatched audio IU of the agents
                 AudioDispatcherModule.
         """
-        if self.me.is_active and not input_iu.is_dispatching:
-            self.me.utter_end = time.time()
-            self.me.last_act = self.me.current_act
-            self.me.current_act = None
-            self.suspended = False
-        elif not self.me.is_active and input_iu.is_dispatching:
-            self.me.utter_start = time.time()
-            self.suspended = False
         self.me.is_active = input_iu.is_dispatching
         self.me.completion = input_iu.completion
+        if self.me.completion == 1:
+            self.me.is_active = False
+
+        if self.me.is_active and not input_iu.is_dispatching:
+            # self.me.utter_end = time.time()
+            self.me.utter_end_dispatch = time.time()
+            self.history.add_state(self.me)
+            print("added self-start")
+            self.me.reset()
+            self.suspended = False
+        elif not self.me.is_active and input_iu.is_dispatching:
+            # self.me.utter_start = time.time()
+            self.me.utter_start_dispatch = time.time()
+            self.suspended = False
 
     def start_speaking(self):
         """
         Adds our planned utterances to the dialog state and pass IU to the TTS
         """
         self.history.add_turn_utterance(self.next_response, speaker="me")
+        self.me.utterance = self.next_response
+        self.me.utter_start = time.time()
+        print(C.blue + "Agent: " + self.next_response + C.end)
         output_iu = self.create_iu(None)
         output_iu.payload = self.next_response
         output_iu.dispatch = True
         self.append(output_iu)
+
+    def handle_vad(self, input_iu):
+        if self.last_vad_is_speaking != input_iu.is_speaking:
+            # print(C.yellow + "VAD")
+            # print("\tis_speaking: ", input_iu.is_speaking)
+            # print("\tsilence_time: ", input_iu.silence_time)
+            # print(C.end)
+            self.last_vad_is_speaking = input_iu.is_speaking
+
+        if self.other.is_active and not input_iu.is_speaking:
+            self.other.is_active = False
+            # if input_iu.silence_time >= self.other_active_silence_time:
+            #     self.other.is_active = False
+        elif not self.other.is_active and input_iu.is_speaking:
+            self.other.is_active = True
 
     def silence(self):
         output_iu = self.create_iu(None)
@@ -263,35 +354,45 @@ class TurnTakingBase(AbstractModule):
         last_state = -1
         while not self.dialogue_finished:
             # Suspend execution until something happens
-            while self.suspended:
-                time.sleep(self.SLEEP_TIME)
+            # not_first = True
+            # while self.suspended:
+            #     if not_first:
+            #         print("suspend")
+            #         not_first = False
+            #     time.sleep(self.SLEEP_TIME)
 
             if not self.dialogue_started and self.first_utterance:
                 self.reset_states()
+                self.dialogue_started = True
                 self.next_response = self.initial_utterance
                 self.start_speaking()
-                self.dialogue_started = True
+                self.suspended = True
 
             if self.both_silent:
                 # 0
-                if last_state != 0:
-                    print(C.yellow + "Agent: BOTH silent" + C.end)
-                    last_state = 0
+                if self.verbose:
+                    if last_state != 0:
+                        print(C.yellow + "\tState: BOTH silent" + C.end)
+                        last_state = 0
             elif self.only_i_speak:
                 # 1
-                if last_state != 1:
-                    print(C.blue + "Agent: only I speak" + C.end)
-                    last_state = 1
+                if self.verbose:
+                    if last_state != 1:
+                        print(C.blue + "\tState: I speak" + C.end)
+                        last_state = 1
             elif self.only_they_speak:
                 # 2
-                if last_state != 2:
-                    print(C.cyan + "Agent: only THEY speak" + C.end)
-                    last_state = 2
+                if self.verbose:
+                    if last_state != 2:
+                        print(C.cyan + "\tState: THEY speak" + C.end)
+                        last_state = 2
             elif self.both_speak:
-                if last_state != 3:
-                    print(C.pink + "BOTH SPEAK" + C.end)
-                    last_state = 3
-                self.silence()
+                if self.verbose:
+                    if last_state != 3:
+                        print(C.pink + "\tState: BOTH SPEAK" + C.end)
+                        last_state = 3
+
+                # self.silence()
 
             time.sleep(self.SLEEP_TIME)
 
@@ -305,50 +406,11 @@ class TurnTakingModule(TurnTakingBase):
     def description():
         return "A dialogue manager that uses eot predictions for turn taking"
 
-    def __init__(self, first_utterance=True, **kwargs):
-        """Initializes the class with the flag of wether the agent should start
-        the conversation or wait until the interlocutor starts the conversation.
-
-        Args:
-            first_utterance (bool): Whether this agent starts the conversation
-        """
-        super().__init__(**kwargs)
-        self.first_utterance = first_utterance
-        self.dialogue_finished = False
-        self.dialogue_started = False
-        self.bc_silence_time = 0.1
-
-        self.history = HistoryTracker()
-        self.me = SpeakerState()
-        self.other = SpeakerState()
-        self.current_utterance = ""  # stored utterance if we do not which to take the turn even with asr.final=True
-
-        # EOT/turn-taking
-        self.eot_prob_min = 0.1
-
-        self.initial_utterance = "Hello there, how can I help you?"
-        self.suspended = False
-
-    def process_iu(self, input_iu):
-        if isinstance(input_iu, SpeechRecognitionIU):
-            self.listen_other(input_iu)
-        elif isinstance(input_iu, VadIU):
-            self.handle_vad(input_iu)
-        elif isinstance(input_iu, DispatchedAudioIU):
-            self.listen_self(input_iu)
-        return None
-
-    def handle_vad(self, input_iu):
-        if self.other.is_active and not input_iu.is_speaking:
-            if input_iu.silence_time > 0.2:
-                self.other.is_active = False
-        elif not self.other.is_active and input_iu.is_speaking:
-            self.other.is_active = True
-
     def listen_other(self, input_iu):
         """
         Listening to the other interlocutor and estimate if they are done or not.
         """
+        self.other.is_active = True
         if input_iu.final:
             # Abort the user says goodbye
             if "goodbye" in input_iu.text or "bye" in input_iu.text:
@@ -367,18 +429,21 @@ class TurnTakingModule(TurnTakingBase):
 
                 # if the asr is final and our trp-model puts a high enought likelihood of turn-shift we decide that it is a
                 # turn-shift. We add the previous utterance to the history and generate a response.
-                if self.eot_prob_min <= trp:
-                    print(C.green + f"EOT recognized TRP: {trp}" + C.end)
+                if trp >= self.eot_prob_min:
+                    print(C.green + f"\tEOT recognized TRP: {trp}" + C.end)
+                    print(C.yellow + "User: " + prel_current_utterance.strip() + C.end)
                     self.history.add_turn_utterance(
                         prel_current_utterance, speaker="other"
                     )
+                    self.other.utter_end = time.time()
+                    self.other.is_active = False
                     self.current_utterance = ""  # reset current_utterance
                     self.generate_response()
                     self.start_speaking()
                 else:
-                    print(C.red + f"Listening TRP: {trp}" + C.end)
                     self.current_utterance = prel_current_utterance
-                    print("current: ", self.current_utterance)
+                    print(C.red + f"\tEOT ongoing TRP: {trp}" + C.end)
+                    print(C.red + "\ttext: ", self.current_utterance + C.end)
 
     def get_eot(self, text):
         json_data = {"text": text}
@@ -396,46 +461,6 @@ class SimpleTurnTakingModule(TurnTakingBase):
     def description():
         return "A dialogue manager that uses eot predictions for turn taking"
 
-    def __init__(self, first_utterance=True, **kwargs):
-        """Initializes the class with the flag of wether the agent should start
-        the conversation or wait until the interlocutor starts the conversation.
-
-        Args:
-            first_utterance (bool): Whether this agent starts the conversation
-        """
-        super().__init__(**kwargs)
-        self.first_utterance = first_utterance
-        self.dialogue_finished = False
-        self.dialogue_started = False
-        self.bc_silence_time = 0.1
-
-        self.history = HistoryTracker()
-        self.me = SpeakerState()
-        self.other = SpeakerState()
-        self.current_utterance = ""  # stored utterance if we do not which to take the turn even with asr.final=True
-
-        # EOT/turn-taking
-        self.eot_prob_min = 0.1
-
-        self.initial_utterance = "Hello there, how can I help you?"
-        self.suspended = False
-
-    def process_iu(self, input_iu):
-        if isinstance(input_iu, SpeechRecognitionIU):
-            self.listen_other(input_iu)
-        elif isinstance(input_iu, VadIU):
-            self.handle_vad(input_iu)
-        elif isinstance(input_iu, DispatchedAudioIU):
-            self.listen_self(input_iu)
-        return None
-
-    def handle_vad(self, input_iu):
-        if self.other.is_active and not input_iu.is_speaking:
-            if input_iu.silence_time > 0.2:
-                self.other.is_active = False
-        elif not self.other.is_active and input_iu.is_speaking:
-            self.other.is_active = True
-
     def listen_other(self, input_iu):
         """
         Listening to the other interlocutor and estimate if they are done or not.
@@ -448,15 +473,10 @@ class SimpleTurnTakingModule(TurnTakingBase):
                 self.shutdown()
             else:
                 self.history.add_turn_utterance(input_iu.text, speaker="other")
-                print(C.green + f"Final" + C.end)
+                print(C.yellow + f"EOT" + C.end)
+                print(C.yellow + input_iu.text + C.end)
                 self.generate_response()
                 self.start_speaking()
-
-    def get_eot(self, text):
-        json_data = {"text": text}
-        response = requests.post(URL_TRP, json=json_data)
-        d = json.loads(response.content.decode())
-        return d["trp"][-1]  # only care about last token
 
 
 class Agent(object):
@@ -467,44 +487,86 @@ class Agent(object):
         bytes_per_sample=2,
         speech_chunk_time=0.1,
         use_backchannel_module=False,
+        other_active_silence_time=0.1,
+        bc_cooldown=2.0,
+        bc_trp_thresh_min=0.1,
+        bc_trp_thresh_max=0.3,
+        bc_vad_silence_time=0.1,
         simple=False,
+        verbose=False,
+        debug=False,
     ):
         self.chunk_time = chunk_time
         self.sample_rate = sample_rate
         self.bytes_per_sample = bytes_per_sample
         self.speech_chunk_time = speech_chunk_time
         self.use_backchannel_module = use_backchannel_module
+        self.other_active_silence_time = other_active_silence_time
         self.simple = simple
 
         # Percecption/Senses
-        self.hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=False)
+        self.hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=debug)
         self.speech = Speech(
             speech_chunk_time, sample_rate, bytes_per_sample, tts_client="amazon"
         )
         if self.simple:
-            self.turn_taking = SimpleTurnTakingModule(first_utterance=True)
+            self.turn_taking = SimpleTurnTakingModule(
+                first_utterance=True,
+                other_active_silence_time=other_active_silence_time,
+                verbose=verbose,
+            )
         else:
-            self.turn_taking = TurnTakingModule(first_utterance=True)
-        if use_backchannel_module:
+            self.turn_taking = TurnTakingModule(
+                first_utterance=True,
+                other_active_silence_time=other_active_silence_time,
+                verbose=verbose,
+            )
+            if use_backchannel_module:
+                self.bc_cooldown = bc_cooldown
+            self.bc_trp_thresh_min = bc_trp_thresh_min
+            self.bc_trp_thresh_max = bc_trp_thresh_max
             self.bc = BackChannelModule(
-                cooldown=2.0,
-                bc_trp_thresh_min=0.1,
-                bc_trp_thresh_max=0.4,
-                vad_time_min=0.1,
+                cooldown=bc_cooldown,
+                bc_trp_thresh_min=bc_trp_thresh_min,
+                bc_trp_thresh_max=bc_trp_thresh_max,
+                vad_time_min=bc_vad_silence_time,
             )
 
         self.connect_components()
 
     def connect_components(self):
         self.hearing.connect_components()
+        self.hearing.vad.subscribe(self.turn_taking)  #  VadIU
+        self.hearing.asr.subscribe(self.turn_taking)  # SpeechRecognitionIU
+        self.turn_taking.subscribe(self.speech.tts)  # DispatchedAudioIU
+        self.speech.audio_dispatcher.subscribe(self.turn_taking)  # listen_self
+
         if self.use_backchannel_module:
             self.hearing.vad.subscribe(self.bc)
             self.hearing.asr.subscribe(self.bc)
 
-        self.hearing.asr.subscribe(self.turn_taking)  # EOT estimation
-        self.hearing.vad.subscribe(self.turn_taking)  # EOT estimation
-        self.turn_taking.subscribe(self.speech.tts)  # speak
-        self.speech.audio_dispatcher.subscribe(self.turn_taking)  # listen_self
+    @staticmethod
+    def add_arguments(parent_parser):
+        """ Specify the hyperparams for this LightningModule """
+        parser = ArgumentParser(parents=[parent_parser], add_help=False)
+
+        # Audio settings
+        parser.add_argument("--bytes_per_sample", type=int, default=2)
+        parser.add_argument("--input_chunk_time", type=float, default=0.01)
+        parser.add_argument("--input_sample_rate", type=int, default=16000)
+        parser.add_argument("--speech_chunk_time", type=float, default=0.1)
+
+        # TurnTaking
+        parser.add_argument("--simple", action="store_true", help="Use the ASR as EOT")
+        parser.add_argument("--other_active_silence_time", type=float, default=0.1)
+
+        # Backchannel
+        parser.add_argument("--bc", action="store_true")
+        parser.add_argument("--bc_vad_silence_time", type=float, default=0.1)
+        parser.add_argument("--bc_trp_thresh_min", type=float, default=0.1)
+        parser.add_argument("--bc_trp_thresh_max", type=float, default=0.3)
+        parser.add_argument("--verbose", action="store_true")
+        return parser
 
     def run(self):
         self.hearing.run_components()
@@ -520,6 +582,7 @@ class Agent(object):
         self.speech.stop_components()
         if self.use_backchannel_module:
             self.bc.stop()
+        print(self.turn_taking.history.states)
         self.turn_taking.stop()
 
 
@@ -537,7 +600,6 @@ def test_components():
     print("sample_rate: ", sample_rate)
     print("chunk_time: ", chunk_time)
     print("bytes_per_sample: ", bytes_per_sample)
-
     hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=False)
     bc = BackChannelModule(
         cooldown=2.0, bc_trp_thresh_min=0.1, bc_trp_thresh_max=0.4, vad_time_min=0.1
@@ -568,19 +630,38 @@ if __name__ == "__main__":
     from argparse import ArgumentParser
 
     parser = ArgumentParser()
-    parser.add_argument("--simple", action="store_true")
+    parser = Agent.add_arguments(parser)
     args = parser.parse_args()
+    for k, v in vars(args).items():
+        print(f"{k}: {v}")
+
     if args.simple:
         print("Using Baseline ASR TurnTaking")
     else:
         print("Using ASR + TurnGPT TurnTaking")
 
-    run_agent(simple=args.simple)
-    # run_agent(simple=True)
-    # test_components()
+    # run_agent(simple=args.simple)
+
+    agent = Agent(
+        chunk_time=args.input_chunk_time,
+        sample_rate=args.input_sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        speech_chunk_time=args.speech_chunk_time,
+        other_active_silence_time=args.other_active_silence_time,
+        use_backchannel_module=args.bc,
+        bc_cooldown=args.bc_vad_silence_time,
+        bc_trp_thresh_min=args.bc_vad_silence_time,
+        bc_trp_thresh_max=args.bc_vad_silence_time,
+        bc_vad_silence_time=args.bc_vad_silence_time,
+        simple=args.simple,
+        verbose=args.verbose,
+        # debug=True,
+    )
+    agent.run()
+    input()
+    agent.stop()
 
     # Some tests?
-
     # Bot
     "hello there how can I help you today?"
 

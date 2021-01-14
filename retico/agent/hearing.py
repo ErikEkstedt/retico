@@ -2,13 +2,14 @@ import logging
 import time
 
 from retico.core.abstract import AbstractConsumingModule
-from retico.core.audio.io import MicrophoneModule
+from retico.core.audio.io import MicrophoneModule, AudioRecorderModule
 from retico.core.debug.general import CallbackModule
 from retico.core.text.asr import IncrementalizeASRModule
 from retico.core.text.common import SpeechRecognitionIU
+from retico.core.text.io import TextRecorderModule
 from retico.modules.google.asr import GoogleASRModule
 
-from retico.agent.vad import VADModule  # , VADDebug
+from retico.agent.vad import VADModule, VADDebug
 from retico.agent.utils import Color as C
 
 from os import environ
@@ -43,7 +44,7 @@ hearing.iasr # incremental-asr-component
 """
 
 
-logging.basicConfig(filename="Hearing.log", level=logging.INFO)
+# logging.basicConfig(filename="Hearing.log", level=logging.INFO)
 
 # Temporary hack
 environ[
@@ -102,34 +103,52 @@ class Hearing(object):
         bytes_per_sample,
         language="en-US",
         nchunks=20,
+        use_asr=True,
+        record=False,
         debug=False,
     ):
         self.sample_rate = sample_rate
         self.chunk_time = chunk_time
         self.chunk_size = int(chunk_time * sample_rate)
         self.bytes_per_sample = bytes_per_sample
+        self.use_asr = use_asr
+        self.record = record
         self.debug = debug
 
-        # Components
+        # Components that are always used
         self.in_mic = MicrophoneModule(
             chunk_size=self.chunk_size,
             rate=self.sample_rate,
             sample_width=self.bytes_per_sample,
         )
         self.vad = VADModule(chunk_time=chunk_time, sample_rate=sample_rate, mode=3)
-        self.asr = GoogleASRModule(
-            language=language,
-            nchunks=nchunks,  # m chunks to trigger a new prediction
-            rate=self.sample_rate,
-        )
-        self.iasr = IncrementalizeASRModule(
-            threshold=0.8
-        )  # Gets only the newly added words at each increment
+
+        # Optional Components
+        if self.use_asr:
+            self.asr = GoogleASRModule(
+                language=language,
+                nchunks=nchunks,  # m chunks to trigger a new prediction
+                rate=self.sample_rate,
+            )
+            self.iasr = IncrementalizeASRModule(
+                threshold=0.8
+            )  # Gets only the newly added words at each increment
+
+        if self.record:
+            wav_filename = "test.wav"
+            self.audio_record = AudioRecorderModule(
+                wav_filename, rate=sample_rate, sample_width=bytes_per_sample
+            )
+            if self.use_asr:
+                txt_filename = "test.txt"
+                self.text_record = TextRecorderModule(txt_filename, separator="\t")
+                txt_filename = "test_inc.txt"
+                self.inc_text_record = TextRecorderModule(txt_filename, separator="\t")
 
         if self.debug:
             # self.iasr_debug = ASRDebugModule(incremental=True)
             self.asr_debug = ASRDebugModule()
-            # self.vad_debug = VADDebug()
+            self.vad_debug = VADDebug()
 
         logging.info(f"{self.name}: Initialized @ {time.time()}")
         self.connect_components()
@@ -145,36 +164,60 @@ class Hearing(object):
         s += f"\nchunk_time: {self.chunk_time}"
         s += f"\nchunk_size: {self.chunk_size}"
         s += f"\nbytes_per_sample: {self.bytes_per_sample}"
+        s += f"\nrecord: {self.record}"
+        s += f"\nuse_asr: {self.use_asr}"
         s += f"\ndebug: {self.debug}"
         s += "\n" + "=" * 40
         return s
 
     def connect_components(self):
-        self.in_mic.subscribe(self.asr)
         self.in_mic.subscribe(self.vad)
-        self.asr.subscribe(self.iasr)
+        if self.use_asr:
+            self.in_mic.subscribe(self.asr)
+            self.asr.subscribe(self.iasr)
+
+        if self.record:
+            self.in_mic.subscribe(self.audio_record)
+            if self.use_asr:
+                self.asr.subscribe(self.text_record)
+                self.iasr.subscribe(self.inc_text_record)
+
         if self.debug:
-            # self.iasr.subscribe(self.iasr_debug)
-            self.asr.subscribe(self.asr_debug)
-            # self.vad.subscribe(self.vad_debug)
+            self.vad.subscribe(self.vad_debug)
+            if self.use_asr:
+                self.asr.subscribe(self.asr_debug)
+                # self.iasr.subscribe(self.iasr_debug)
 
         logging.info(f"{self.name}: Connected Components")
 
     def setup(self):
         self.in_mic.setup()
-        self.asr.setup()
-        self.iasr.setup()
+        if self.use_asr:
+            self.asr.setup()
+            self.iasr.setup()
+        if self.record:
+            self.audio_record.setup()
+            if self.use_asr:
+                self.text_record.setup()
+                self.inc_text_record.setup()
         logging.info(f"{self.name}: Setup")
 
     def run_components(self, run_setup=True):
         self.in_mic.run(run_setup=run_setup)
         self.vad.run(run_setup=run_setup)
-        self.asr.run(run_setup=run_setup)
-        self.iasr.run(run_setup=run_setup)
+        if self.use_asr:
+            self.asr.run(run_setup=run_setup)
+            self.iasr.run(run_setup=run_setup)
+        if self.record:
+            self.audio_record.run(run_setup=run_setup)
+            if self.use_asr:
+                self.text_record.run(run_setup=run_setup)
+                self.inc_text_record.run(run_setup=run_setup)
         if self.debug:
-            # self.iasr_debug.run(run_setup=run_setup)
-            self.asr_debug.run(run_setup=run_setup)
-            # self.vad_debug.run(run_setup=run_setup)
+            self.vad_debug.run(run_setup=run_setup)
+            if self.use_asr:
+                self.asr_debug.run(run_setup=run_setup)
+                # self.iasr_debug.run(run_setup=run_setup)
         logging.info(
             f"{self.name}: run_components (run_setup={run_setup}) @ {time.time()}"
         )
@@ -182,28 +225,33 @@ class Hearing(object):
     def stop_components(self):
         self.in_mic.stop()
         self.vad.stop()
-        self.asr.stop()
-        self.iasr.stop()
+        if self.use_asr:
+            self.asr.stop()
+            self.iasr.stop()
+        if self.record:
+            self.audio_record.stop()
+            if self.use_asr:
+                self.text_record.stop()
+                self.inc_text_record.stop()
         if self.debug:
-            # self.iasr_debug.stop()
-            self.asr_debug.stop()
-            # self.vad_debug.stop()
+            self.vad_debug.stop()
+            if self.use_asr:
+                self.asr_debug.stop()
+                # self.iasr_debug.stop()
         logging.info(f"{self.name}: stop_components @ {time.time()}")
 
 
-def test_hearing():
-    sample_rate = 16000
-    chunk_time = 0.01
-    bytes_per_sample = 2
-
+def test_hearing(args):
     hearing = Hearing(
-        chunk_time=chunk_time,
-        sample_rate=sample_rate,
-        bytes_per_sample=bytes_per_sample,
-        debug=True,
+        chunk_time=args.chunk_time,
+        sample_rate=args.sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        use_asr=args.use_asr,
+        record=args.record,
+        debug=args.debug,
     )
+
     print(hearing)
-    # hearing.connect_components()
     hearing.run_components()
     try:
         input()
@@ -213,5 +261,15 @@ def test_hearing():
 
 
 if __name__ == "__main__":
+    from argparse import ArgumentParser
 
-    test_hearing()
+    parser = ArgumentParser()
+    parser.add_argument("--chunk_time", type=float, default=0.01)
+    parser.add_argument("--sample_rate", type=int, default=16000)
+    parser.add_argument("--bytes_per_sample", type=int, default=2)
+    parser.add_argument("--use_asr", action="store_true")
+    parser.add_argument("--record", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+
+    args = parser.parse_args()
+    test_hearing(args)

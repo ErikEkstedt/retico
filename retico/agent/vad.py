@@ -1,30 +1,13 @@
 from retico.core.abstract import (
     AbstractModule,
-    IncrementalUnit,
     AbstractConsumingModule,
 )
 from retico.core.audio.common import AudioIU
-
+from retico.agent.common import VadIU
 from retico.agent.utils import Color as C
 
+import numpy as np
 import webrtcvad
-
-
-class VadIU(IncrementalUnit):
-    @staticmethod
-    def type():
-        return "Vad IU"
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.is_speaking = False
-        self.silence_time = 0
-
-    def set_is_speaking(self):
-        self.is_speaking = True
-
-    def set_silence_time(self, silence_time):
-        self.silence_time = silence_time
 
 
 class VADDebug(AbstractConsumingModule):
@@ -42,14 +25,13 @@ class VADDebug(AbstractConsumingModule):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.last_silence_time = 0
+        self.last_is_speaking = True
 
     def process_iu(self, input_iu):
-        if input_iu.silence_time != self.last_silence_time:
-            self.last_silence_time = input_iu.silence_time
-            print(C.yellow + "VAD")
+        if input_iu.is_speaking != self.last_is_speaking:
+            self.last_is_speaking = input_iu.is_speaking
+            print(C.yellow + "VAD DEBUG")
             print("\tis_speaking: ", input_iu.is_speaking)
-            print("\tsilence_time: ", input_iu.silence_time)
             print(C.end)
 
 
@@ -73,22 +55,18 @@ class VADModule(AbstractModule):
     def __init__(self, chunk_time, sample_rate, mode=3, **kwargs):
         super().__init__(**kwargs)
         self.vad = webrtcvad.Vad(mode=mode)
-        self.chunk_time = chunk_time
         self.sample_rate = sample_rate
-        self.silence_time = 0
-        self.silence_discrete = 0
+        self.chunk_time = chunk_time
+
+        assert chunk_time in [
+            0.01,
+            0.02,
+            0.03,
+        ], f"webrtc.Vad must use frames of 10, 20 or 30 ms but got {int(chunk_time*1000)}"
 
     def process_iu(self, input_iu):
-        is_speaking = self.vad.is_speech(input_iu.raw_audio, self.sample_rate)
         output_iu = self.create_iu()
-        if is_speaking:
-            self.silence_time = 0
-            self.silence_discrete = 0
-            output_iu.set_is_speaking()
-        else:
-            self.silence_time += self.chunk_time
-            self.silence_time = round(self.silence_time, 2)
-            output_iu.set_silence_time(self.silence_time)
+        output_iu.is_speaking = self.vad.is_speech(input_iu.raw_audio, self.sample_rate)
         return output_iu
 
 
@@ -105,12 +83,12 @@ def test_vad():
         rate=sample_rate,
         sample_width=bytes_per_sample,
     )
+    vad = VADModule(chunk_time=chunk_time, sample_rate=sample_rate, mode=3)
     vad_debug = VADDebug()
-    vad = VADModule(
-        chunk_time=chunk_time, sample_rate=sample_rate, silence_interval=0.05, mode=3
-    )
-    vad.subscribe(vad_debug)
+
+    # Connect
     in_mic.subscribe(vad)
+    vad.subscribe(vad_debug)
 
     in_mic.run()
     vad.run()
