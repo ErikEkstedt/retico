@@ -9,7 +9,7 @@ from retico.core.text.common import SpeechRecognitionIU
 from retico.core.text.io import TextRecorderModule
 from retico.modules.google.asr import GoogleASRModule
 
-from retico.agent.vad import VADModule, VADDebug
+from retico.agent.vad import VADFrames
 from retico.agent.utils import Color as C
 
 from os import environ
@@ -104,6 +104,7 @@ class Hearing(object):
         language="en-US",
         nchunks=20,
         use_asr=True,
+        use_iasr=False,
         record=False,
         debug=False,
     ):
@@ -112,8 +113,12 @@ class Hearing(object):
         self.chunk_size = int(chunk_time * sample_rate)
         self.bytes_per_sample = bytes_per_sample
         self.use_asr = use_asr
+        self.use_iasr = use_iasr
         self.record = record
         self.debug = debug
+
+        if self.use_iasr:
+            self.use_asr = True
 
         # Components that are always used
         self.in_mic = MicrophoneModule(
@@ -121,7 +126,10 @@ class Hearing(object):
             rate=self.sample_rate,
             sample_width=self.bytes_per_sample,
         )
-        self.vad = VADModule(chunk_time=chunk_time, sample_rate=sample_rate, mode=3)
+        self.vad_frames = VADFrames(
+            chunk_time=chunk_time, sample_rate=sample_rate, mode=3, debug=debug
+        )
+        self.in_mic.subscribe(self.vad_frames)
 
         # Optional Components
         if self.use_asr:
@@ -130,28 +138,35 @@ class Hearing(object):
                 nchunks=nchunks,  # m chunks to trigger a new prediction
                 rate=self.sample_rate,
             )
+            self.in_mic.subscribe(self.asr)
+
+        if self.use_iasr:
             self.iasr = IncrementalizeASRModule(
                 threshold=0.8
             )  # Gets only the newly added words at each increment
+            self.asr.subscribe(self.iasr)
 
         if self.record:
             wav_filename = "test.wav"
             self.audio_record = AudioRecorderModule(
                 wav_filename, rate=sample_rate, sample_width=bytes_per_sample
             )
+            self.in_mic.subscribe(self.audio_record)
+
             if self.use_asr:
                 txt_filename = "test.txt"
                 self.text_record = TextRecorderModule(txt_filename, separator="\t")
+                self.asr.subscribe(self.text_record)
                 txt_filename = "test_inc.txt"
                 self.inc_text_record = TextRecorderModule(txt_filename, separator="\t")
+                self.iasr.subscribe(self.inc_text_record)
 
         if self.debug:
-            # self.iasr_debug = ASRDebugModule(incremental=True)
             self.asr_debug = ASRDebugModule()
-            self.vad_debug = VADDebug()
+            if self.use_asr:
+                self.asr.subscribe(self.asr_debug)
 
         logging.info(f"{self.name}: Initialized @ {time.time()}")
-        self.connect_components()
 
     @property
     def name(self):
@@ -170,26 +185,6 @@ class Hearing(object):
         s += "\n" + "=" * 40
         return s
 
-    def connect_components(self):
-        self.in_mic.subscribe(self.vad)
-        if self.use_asr:
-            self.in_mic.subscribe(self.asr)
-            self.asr.subscribe(self.iasr)
-
-        if self.record:
-            self.in_mic.subscribe(self.audio_record)
-            if self.use_asr:
-                self.asr.subscribe(self.text_record)
-                self.iasr.subscribe(self.inc_text_record)
-
-        if self.debug:
-            self.vad.subscribe(self.vad_debug)
-            if self.use_asr:
-                self.asr.subscribe(self.asr_debug)
-                # self.iasr.subscribe(self.iasr_debug)
-
-        logging.info(f"{self.name}: Connected Components")
-
     def setup(self):
         self.in_mic.setup()
         if self.use_asr:
@@ -204,17 +199,24 @@ class Hearing(object):
 
     def run_components(self, run_setup=True):
         self.in_mic.run(run_setup=run_setup)
-        self.vad.run(run_setup=run_setup)
+        self.vad_frames.run(run_setup=run_setup)
+
         if self.use_asr:
             self.asr.run(run_setup=run_setup)
+
+        if self.use_iasr:
             self.iasr.run(run_setup=run_setup)
+
         if self.record:
             self.audio_record.run(run_setup=run_setup)
+
             if self.use_asr:
                 self.text_record.run(run_setup=run_setup)
+
+            if self.use_iasr:
                 self.inc_text_record.run(run_setup=run_setup)
+
         if self.debug:
-            self.vad_debug.run(run_setup=run_setup)
             if self.use_asr:
                 self.asr_debug.run(run_setup=run_setup)
                 # self.iasr_debug.run(run_setup=run_setup)
@@ -224,20 +226,23 @@ class Hearing(object):
 
     def stop_components(self):
         self.in_mic.stop()
-        self.vad.stop()
+        self.vad_frames.stop()
+
         if self.use_asr:
             self.asr.stop()
+
+        if self.use_iasr:
             self.iasr.stop()
+
         if self.record:
             self.audio_record.stop()
             if self.use_asr:
                 self.text_record.stop()
+            if self.use_iasr:
                 self.inc_text_record.stop()
         if self.debug:
-            self.vad_debug.stop()
             if self.use_asr:
                 self.asr_debug.stop()
-                # self.iasr_debug.stop()
         logging.info(f"{self.name}: stop_components @ {time.time()}")
 
 

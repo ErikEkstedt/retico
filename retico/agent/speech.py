@@ -1,12 +1,12 @@
-from retico.core.abstract import AbstractModule, AbstractConsumingModule
-from retico.core.audio.common import DispatchedAudioIU, SpeechIU
+from retico.core.debug.general import CallbackModule
 from retico.core.audio.io import (
     AudioDispatcherModule,
     StreamingSpeakerModule,
 )
-from retico.core.text.common import GeneratedTextIU
 from retico.modules.amazon.tts import AmazonTTSModule
 from retico.modules.google.tts_new import GoogleTTSModule
+
+from retico.agent.utils import Color as C
 
 
 """
@@ -22,83 +22,7 @@ Metrics
     * Which words are completed?
     * Which words are left?
 
-
 """
-
-
-class TTSDummy(AbstractConsumingModule):
-    @staticmethod
-    def name():
-        return "TTSDummy Module"
-
-    @staticmethod
-    def description():
-        return "Print out values instead of actually producing TTS"
-
-    @staticmethod
-    def input_ius():
-        return [GeneratedTextIU]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def process_iu(self, input_iu):
-        print("TTS:")
-        print("\ttext: ", len(input_iu.text))
-
-
-class TTSDebug(AbstractConsumingModule):
-    @staticmethod
-    def name():
-        return "TTSDebug Module"
-
-    @staticmethod
-    def description():
-        return "Print out values"
-
-    @staticmethod
-    def input_ius():
-        return [SpeechIU]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def process_iu(self, input_iu):
-        print("\twords: ", input_iu.words)
-        print("\tstarts: ", input_iu.starts)
-        print("\tends: ", input_iu.ends)
-        print("AudioIU:")
-        print("\traw_audio: ", len(input_iu.raw_audio))
-        print("\trate: ", input_iu.rate)
-        print("\tnframes: ", input_iu.nframes)
-        print("\tsample_width: ", input_iu.sample_width)
-
-
-class AudioDispatcherDebug(AbstractConsumingModule):
-    @staticmethod
-    def name():
-        return "AudioDispatcherDebug Module"
-
-    @staticmethod
-    def description():
-        return "Print out values"
-
-    @staticmethod
-    def input_ius():
-        return [DispatchedAudioIU]
-
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-
-    def process_iu(self, input_iu):
-        print("completion: ", input_iu.completion)  # % of utterance done
-        print("is_dispatching: ", input_iu.is_dispatching)
-        print("AudioIU:")
-        print("\traw_audio: ", len(input_iu.raw_audio))
-        print("\trate: ", input_iu.rate)
-        print("\tnframes: ", input_iu.nframes)
-        print("\tsample_width: ", input_iu.sample_width)
-
 
 # TODO
 # Extend AudioDispatcherModule with not only providing `completion` (percentage completed of total utterance) but also
@@ -108,10 +32,17 @@ class AudioDispatcherDebug(AbstractConsumingModule):
 # long utterances.
 
 
-class Speech(object):
+class Speech:
     """
     Connect the tts component of the Speech-class to a module which outputs `GeneratedTextIU`
     """
+
+    EVENT_SPEECH_STARTED = "event_speech_started"
+    EVENT_SPEECH_ENDED = "event_speech_ended"
+
+    @staticmethod
+    def name():
+        return "Speech Module"
 
     def __init__(
         self,
@@ -121,7 +52,9 @@ class Speech(object):
         tts_client="google",
         output_word_times=False,
         debug=False,
+        **kwargs,
     ):
+        super().__init__(**kwargs)
         self.chunk_time = chunk_time
         self.sample_rate = sample_rate
         self.chunk_size = int(chunk_time * sample_rate)
@@ -158,50 +91,52 @@ class Speech(object):
         self.streaming_speaker = StreamingSpeakerModule(
             self.chunk_size, rate=sample_rate, sample_width=bytes_per_sample
         )
-
-        if debug:
-            self.tts_debug = TTSDebug()
-            self.audio_dispatcher_debug = AudioDispatcherDebug()
-
-        self.connect_components()
-
-    def connect_components(self):
         self.tts.subscribe(self.audio_dispatcher)
         self.audio_dispatcher.subscribe(self.streaming_speaker)
-        if self.debug:
-            self.tts.subscribe(self.tts_debug)
-            # self.audio_dispatcher.subscribe(self.audio_dispatcher_debug)
 
-    def setup(self):
+        if debug:
+            self.tts_debug = CallbackModule(
+                callback=lambda x: print(C.blue, f"TTS: {x.dispatch}", C.end)
+            )
+            self.tts.subscribe(self.tts_debug)
+            self.audio_dispatcher_debug = CallbackModule(
+                callback=lambda x: print(
+                    C.green,
+                    f"completion: {x.completion} is_dispatching: {x.is_dispatching}",
+                    C.end,
+                )
+            )
+            self.audio_dispatcher.subscribe(self.audio_dispatcher_debug)
+
+    def setup(self, **kwargs):
         self.tts.setup()
         self.audio_dispatcher.setup()
         self.streaming_speaker.setup()
 
-    def run_components(self, run_setup=True):
-        self.tts.run(run_setup=run_setup)
-        self.audio_dispatcher.run(run_setup=run_setup)
-        self.streaming_speaker.run(run_setup=run_setup)
+    def run(self, **kwargs):
+        self.tts.run(**kwargs)
+        self.audio_dispatcher.run(**kwargs)
+        self.streaming_speaker.run(**kwargs)
         if self.debug:
-            # self.audio_dispatcher_debug.run(run_setup=run_setup)
-            self.tts_debug.run(run_setup=run_setup)
+            self.audio_dispatcher_debug.run(**kwargs)
+            self.tts_debug.run(**kwargs)
 
-    def stop_components(self):
-        self.tts.stop()
-        self.audio_dispatcher.stop()
-        self.streaming_speaker.stop()
+    def stop(self, **kwargs):
+        self.tts.stop(**kwargs)
+        self.audio_dispatcher.stop(**kwargs)
+        self.streaming_speaker.stop(**kwargs)
         if self.debug:
-            # self.audio_dispatcher_debug.stop()
-            self.tts_debug.stop()
+            self.audio_dispatcher_debug.stop(**kwargs)
+            self.tts_debug.stop(**kwargs)
 
 
 def test_speech():
     from retico.core.text.asr import TextDispatcherModule
+    import time
 
     sample_rate = 16000
-    chunk_time = 0.5
+    chunk_time = 0.1
     bytes_per_sample = 2
-
-    sample_text = "Hello there, I am a nice bot here to help you with anything that you might need. I can be interrupted and I will always be nice about it."
 
     speech = Speech(
         chunk_time,
@@ -209,14 +144,15 @@ def test_speech():
         bytes_per_sample,
         tts_client="amazon",
         output_word_times=True,
-        debug=True,
+        debug=False,
     )
 
+    sample_text = "Hello there, I am a nice bot here to help you with anything that you might need. I can be interrupted and I will always be nice about it."
     text = TextDispatcherModule()
 
     # speech.connect_components()
     text.subscribe(speech.tts)
-    speech.run_components()
+    speech.run()
     text.run()
 
     input_iu = text.create_iu(None)
@@ -224,9 +160,14 @@ def test_speech():
     input_iu.dispatch = True
     text.append(input_iu)
 
+    time.sleep(4)
+    input_iu = text.create_iu(None)
+    input_iu.payload = ""
+    input_iu.dispatch = False
+    text.append(input_iu)
     input()
 
-    speech.stop_components()
+    speech.stop()
     text.stop()
 
 

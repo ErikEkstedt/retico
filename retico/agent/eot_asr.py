@@ -1,6 +1,7 @@
 import requests
 import json
 import re
+import time
 
 from retico.core.abstract import (
     AbstractModule,
@@ -9,7 +10,7 @@ from retico.core.abstract import (
 
 from retico.core.text.common import SpeechRecognitionIU
 
-from retico.agent.common import TurnTakingIU, EotIU
+from retico.agent.common import EotIU, SadIU
 from retico.agent.utils import Color as C
 
 
@@ -75,41 +76,6 @@ class EOT_ASR_FINAL(AbstractModule):
                 output_iu = self.create_iu()
                 output_iu.set_eot(eot=self.eot_state)
                 return output_iu
-
-
-def test_eot_asr():
-    from retico.agent.hearing import Hearing
-
-    sample_rate = 16000
-    chunk_time = 0.01
-    bytes_per_sample = 2
-
-    hearing = Hearing(
-        chunk_time=chunk_time,
-        sample_rate=sample_rate,
-        bytes_per_sample=bytes_per_sample,
-        use_asr=True,
-        record=False,
-        debug=False,
-    )
-    eot_asr_final = EOT_ASR_FINAL()
-    eot_asr_final_debug = EOT_ASR_DEBUG()
-
-    # Connect Components
-    hearing.asr.subscribe(eot_asr_final)
-    eot_asr_final.subscribe(eot_asr_final_debug)
-
-    # run
-    hearing.run_components()
-    eot_asr_final.run()
-    eot_asr_final_debug.run()
-    try:
-        input()
-    except KeyboardInterrupt:
-        pass
-    hearing.stop_components()
-    eot_asr_final.stop()
-    eot_asr_final_debug.stop()
 
 
 class EOT_LM_Only(AbstractModule):
@@ -225,6 +191,137 @@ class EOT_LM_Final(AbstractModule):
             self.listen_other(input_iu)
 
 
+class EOT_LM_Sad(AbstractModule):
+    @staticmethod
+    def name():
+        return "EOT-ASR-Final Module"
+
+    @staticmethod
+    def description():
+        return "EOT based on ASR final"
+
+    @staticmethod
+    def input_ius():
+        return [SpeechRecognitionIU, SadIU]
+
+    @staticmethod
+    def output_iu():
+        return EotIU
+
+    def get_eot(self, text):
+        json_data = {"text": text}
+        response = requests.post(URL_TRP, json=json_data)
+        d = json.loads(response.content.decode())
+        return d["trp"][-1]  # only care about last token
+
+    def __init__(self, trp_thresh=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.trp_thresh = trp_thresh
+
+        self.current_utterance = ""
+        self.preliminary_utterance = ""
+        self.last_sent_eot_state = None
+        self.latest_trp = 0
+        self.user_is_speaking = False
+
+    def update(self):
+        output_iu = None
+        if self.last_sent_eot_state is None:
+            output_iu = self.create_iu()
+            output_iu.set_eot(
+                probability=self.latest_trp,
+                eot=False,
+                text="SSTART",
+            )
+            self.last_sent_eot_state = False
+            # self.append(output_iu)
+            # return
+
+        elif not self.user_is_speaking and self.latest_trp > self.trp_thresh:
+            output_iu = self.create_iu()
+            output_iu.set_eot(
+                probability=self.latest_trp, eot=True, text=self.preliminary_utterance
+            )
+            self.last_sent_eot_state = True
+            self.current_utterance = ""
+            self.preliminary_utterance = ""
+            # self.append(output_iu)
+            # time.sleep(0.05)
+            # return
+
+        elif self.last_sent_eot_state is None or self.last_sent_eot_state != False:
+            output_iu = self.create_iu()
+            output_iu.set_eot(
+                probability=self.latest_trp,
+                eot=False,
+                text=self.preliminary_utterance,
+            )
+            self.last_sent_eot_state = False
+            # self.append(output_iu)
+        return output_iu
+
+    def handle_sad(self, input_iu):
+        """simply updates the user state"""
+        self.user_is_speaking = input_iu.is_speaking
+        return self.update()
+
+    def listen_other(self, input_iu):
+        self.preliminary_utterance = self.current_utterance + " " + input_iu.text
+        self.preliminary_utterance = re.sub(
+            "\s\s+", " ", self.preliminary_utterance
+        ).strip()
+
+        if input_iu.final:  # if final we append the utterance to store
+            self.current_utterance = self.preliminary_utterance
+
+        self.latest_trp = self.get_eot(self.preliminary_utterance)
+        # print("prel: ", self.preliminary_utterance)
+        # print("trp: ", self.latest_trp)
+        # print()
+        return self.update()
+
+    def process_iu(self, input_iu):
+        if isinstance(input_iu, SpeechRecognitionIU):
+            return self.listen_other(input_iu)
+        elif isinstance(input_iu, SadIU):
+            return self.handle_sad(input_iu)
+
+
+def test_eot_asr():
+    from retico.agent.hearing import Hearing
+
+    sample_rate = 16000
+    chunk_time = 0.01
+    bytes_per_sample = 2
+
+    hearing = Hearing(
+        chunk_time=chunk_time,
+        sample_rate=sample_rate,
+        bytes_per_sample=bytes_per_sample,
+        use_asr=True,
+        record=False,
+        debug=False,
+    )
+    eot_asr_final = EOT_ASR_FINAL()
+    eot_asr_final_debug = EOT_ASR_DEBUG()
+
+    # Connect Components
+    hearing.asr.subscribe(eot_asr_final)
+    eot_asr_final.subscribe(eot_asr_final_debug)
+
+    # run
+    hearing.run_components()
+    eot_asr_final.run()
+    eot_asr_final_debug.run()
+    try:
+        input()
+    except KeyboardInterrupt:
+        pass
+    hearing.stop_components()
+    eot_asr_final.stop()
+    eot_asr_final_debug.stop()
+
+
 def test_eot_lm_only():
     from retico.agent.hearing import Hearing
 
@@ -295,6 +392,47 @@ def test_eot_lm_final():
     eot_asr_final_debug.stop()
 
 
+def test_eot_lm_sad():
+    from retico.agent.hearing import Hearing
+    from retico.agent.sad import SADModule
+
+    sample_rate = 16000
+    chunk_time = 0.01
+    bytes_per_sample = 2
+
+    hearing = Hearing(
+        chunk_time=chunk_time,
+        sample_rate=sample_rate,
+        bytes_per_sample=bytes_per_sample,
+        use_asr=True,
+        record=False,
+        debug=False,
+    )
+    sad = SADModule(chunk_time=chunk_time, vad_off_time=0.5, vad_on_time=0.1)
+    eot_lm_sad = EOT_LM_Sad()
+    eot_asr_final_debug = EOT_ASR_DEBUG()
+
+    # Connect Components
+    hearing.asr.subscribe(eot_lm_sad)
+    hearing.vad.subscribe(sad)
+    sad.subscribe(eot_lm_sad)
+    eot_lm_sad.subscribe(eot_asr_final_debug)
+
+    # run
+    hearing.run_components()
+    sad.run()
+    eot_lm_sad.run()
+    eot_asr_final_debug.run()
+    try:
+        input()
+    except KeyboardInterrupt:
+        pass
+    hearing.stop_components()
+    eot_lm_sad.stop()
+    sad.stop()
+    eot_asr_final_debug.stop()
+
+
 if __name__ == "__main__":
     from argparse import ArgumentParser
 
@@ -314,3 +452,9 @@ if __name__ == "__main__":
         print("LM + ASR-Final")
         print()
         test_eot_lm_final()
+    elif args.module == "lm_sad":
+        print("LM + SAD")
+        print()
+        test_eot_lm_sad()
+    else:
+        raise NotImplementedError()

@@ -1,3 +1,6 @@
+import json
+
+
 class Color:
     """
     Used to color the output text when debugging or printing out dialogs
@@ -11,3 +14,8 @@ class Color:
     pink = "\033[95m"
     cyan = "\033[96m"
     end = "\033[0m"
+
+
+def write_json(data, filename):
+    with open(filename, "w", encoding="utf-8") as jsonfile:
+        json.dump(data, jsonfile, ensure_ascii=False)

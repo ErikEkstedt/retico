@@ -333,8 +333,6 @@ class TurnTakingBase(AbstractModule):
 
         if self.other.is_active and not input_iu.is_speaking:
             self.other.is_active = False
-            # if input_iu.silence_time >= self.other_active_silence_time:
-            #     self.other.is_active = False
         elif not self.other.is_active and input_iu.is_speaking:
             self.other.is_active = True
 
@@ -393,7 +391,6 @@ class TurnTakingBase(AbstractModule):
                         last_state = 3
 
                 # self.silence()
-
             time.sleep(self.SLEEP_TIME)
 
 
@@ -418,9 +415,8 @@ class TurnTakingModule(TurnTakingBase):
                 self.start_speaking()
                 self.shutdown()
             else:
-                prel_current_utterance = " ".join(
-                    [self.current_utterance, input_iu.text]
-                )
+                prel_current_utterance = self.current_utterance + " " + input_iu.text
+                prel_current_utterance = re.sub("\s\s+", " ", prel_current_utterance)
 
                 # Add preliminary utterance to history
                 preliminary_turns = self.history.get_turns()
