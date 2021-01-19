@@ -95,8 +95,9 @@ class TTSPolly(object):
         for row in data_strings:
             row = json.loads(row)
             words.append(row["value"])
-            starts.append(int(row["start"]) / 1000)
-            ends.append(int(row["end"]) / 1000)
+            starts.append(int(row["time"]) / 1000)  # / 1000)
+            # starts.append(int(row["start"]))  # / 1000)
+            # ends.append(int(row["end"]))  # / 1000)
         return words, starts, ends
 
     def tts(self, text):
@@ -128,9 +129,10 @@ class TTSPolly(object):
                 SpeechMarkTypes=["word"],
             )
             words, starts, ends = self.response_marks_reader(response_marks)
-            return words, starts, ends, raw_audio
+            duration = len(raw_audio) / 2.0 / float(self.sample_rate)
+            return words, starts, ends, duration, raw_audio
         else:
-            return None, None, None, raw_audio
+            return None, None, None, None, raw_audio
 
 
 class AmazonTTSModule(abstract.AbstractModule):
@@ -170,13 +172,17 @@ class AmazonTTSModule(abstract.AbstractModule):
 
     def process_iu(self, input_iu):
         output_iu = self.create_iu(input_iu)
-        words, starts, ends, raw_audio = self.tts.tts(input_iu.get_text())
-        nframes = len(raw_audio) / self.bytes_per_sample
-        output_iu.set_audio(raw_audio, nframes, self.sample_rate, self.bytes_per_sample)
+        if input_iu.get_text() != "":
+            words, starts, ends, duration, raw_audio = self.tts.tts(input_iu.get_text())
+            nframes = len(raw_audio) / self.bytes_per_sample
+            output_iu.set_audio(
+                raw_audio, nframes, self.sample_rate, self.bytes_per_sample
+            )
+            output_iu.words = words
+            output_iu.starts = starts
+            output_iu.ends = ends
+            output_iu.duration = duration
         output_iu.dispatch = input_iu.dispatch
-        output_iu.words = words
-        output_iu.starts = starts
-        output_iu.ends = ends
         return output_iu
 
 

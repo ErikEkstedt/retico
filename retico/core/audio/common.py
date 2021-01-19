@@ -26,11 +26,25 @@ class AudioIU(abstract.IncrementalUnit):
     def type():
         return "Audio IU"
 
-    def __init__(self, creator=None, iuid=0, previous_iu=None, grounded_in=None,
-                 rate=None, nframes=None, sample_width=None, raw_audio=None,
-                 **kwargs):
-        super().__init__(creator=creator, iuid=iuid, previous_iu=previous_iu,
-                         grounded_in=grounded_in, payload=raw_audio)
+    def __init__(
+        self,
+        creator=None,
+        iuid=0,
+        previous_iu=None,
+        grounded_in=None,
+        rate=None,
+        nframes=None,
+        sample_width=None,
+        raw_audio=None,
+        **kwargs
+    ):
+        super().__init__(
+            creator=creator,
+            iuid=iuid,
+            previous_iu=previous_iu,
+            grounded_in=grounded_in,
+            payload=raw_audio,
+        )
         self.raw_audio = raw_audio
         self.rate = rate
         self.nframes = nframes
@@ -67,7 +81,7 @@ class SpeechIU(AudioIU):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.disptach = False
+        self.dispatch = False
 
 
 class DispatchedAudioIU(AudioIU):

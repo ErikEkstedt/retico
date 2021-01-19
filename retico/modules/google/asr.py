@@ -9,6 +9,7 @@ from retico.core.text.common import SpeechRecognitionIU
 from retico.core.audio.common import AudioIU
 from google.cloud import speech as gspeech
 import time
+import logging
 
 # from google.cloud.speech import enums
 # from google.cloud.speech import types
@@ -130,18 +131,6 @@ class GoogleASRModule(abstract.AbstractModule):
         self.streaming_config = gspeech.StreamingRecognitionConfig(
             config=config, interim_results=True
         )
-
-    # def prepare_run(self):
-    #     print("Setup prepare_run")
-    #     requests = (
-    #         gspeech.StreamingRecognizeRequest(audio_content=content)
-    #         for content in self._generator()
-    #     )
-    #     self.responses = self.client.streaming_recognize(
-    #         self.streaming_config, requests
-    #     )
-    #     t = threading.Thread(target=self._produce_predictions_loop)
-    #     t.start()
 
     def prepare_run(self):
         t = threading.Thread(target=self.request_thread)

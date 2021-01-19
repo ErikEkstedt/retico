@@ -10,6 +10,8 @@ import pyaudio
 from retico.core import abstract
 from retico.core.audio.common import AudioIU, SpeechIU, DispatchedAudioIU
 
+import numpy as np
+
 CHANNELS = 1
 """Number of channels. Should never be changed. As soon as stereo telephony
 becomes a thing I will rewrite this."""
@@ -374,10 +376,16 @@ class AudioDispatcherModule(abstract.AbstractModule):
         if self.interrupt or not input_iu.dispatch:
             self.set_dispatching(False)
             self.audio_buffer = []
+
         if input_iu.dispatch:
             # Loop over all frames (frame-sized chunks of data) in the input IU
             # and add them to the buffer to be dispatched by the
             # _dispatch_audio_loop
+            add_completed_words = False
+            if hasattr(input_iu, "words") and hasattr(input_iu, "ends"):
+                rel_starts = np.array(input_iu.starts) / input_iu.duration
+                add_completed_words = True
+
             for i in range(0, input_iu.nframes, self.target_chunk_size):
                 cur_pos = i * self.sample_width
                 data = input_iu.raw_audio[cur_pos : cur_pos + cur_width]
@@ -393,6 +401,9 @@ class AudioDispatcherModule(abstract.AbstractModule):
                 current_iu.set_audio(
                     data, self.target_chunk_size, self.rate, self.sample_width
                 )
+                if add_completed_words:
+                    n_completed = (rel_starts <= completion).sum()
+                    current_iu.completion_words = " ".join(input_iu.words[:n_completed])
                 self.audio_buffer.append(current_iu)
             self.set_dispatching(True)
         return None
