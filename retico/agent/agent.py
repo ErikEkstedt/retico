@@ -1,673 +1,719 @@
-import time
-import threading
-import requests
 import json
-import re
 import random
+import requests
+import threading
+import time
+import re
 
-from retico.core.abstract import AbstractModule, AbstractConsumingModule
-from retico.core.audio.common import DispatchedAudioIU
+from retico.core.abstract import AbstractModule
 from retico.core.text.common import SpeechRecognitionIU, GeneratedTextIU
+from retico.core.audio.common import SpeechIU, DispatchedAudioIU
 
-# from retico.core.text.asr import TextDispatcherModule
-
-from retico.agent.hearing import Hearing
-from retico.agent.speech import Speech, TTSDummy
-from retico.agent.vad import VadIU
-from retico.agent.backchannel import BackChannelModule
 from retico.agent.utils import Color as C
+from retico.agent.utils import write_json
 
-
-"""
-The agent that is actually conducting a conversation.
-
-The starting point is the repeat agent which listens, and remember, what is being said and upon finality from the ASR
-starts repeating what was said.
-
-
-TurnTakingModule
-* Continuous
-    * listen_self
-    * listen_other
-* handle_vad
-* Actions
-    * start_speaking
-        - save self-utterance here?
-    * silence
-
-
-"""
-
-URL_SAMPLE = "http://localhost:5000/sample"
-URL_EOT = "http://localhost:5000/eot"
 URL_TRP = "http://localhost:5000/trp"
 
 
-class SpeakerState:
+class UserState:
     def __init__(self):
-        """Create a new SpeakerState with the default parameters
-
-        Returns:
-            type: Description of returned object.
-
-        """
-        self.utter_start = 0
-        self.utter_end = 0
-        self.utter_start_dispatch = 0
-        self.utter_end_dispatch = 0
-        self.dialogue_started = False
-        self.is_active = False
-        self.completion = 0.0
-
+        self.name = "user"
         self.utterance = ""
-        self.audio = None
-        self.loop_states = []
+        self.prel_utterance = ""
 
-    def reset(self):
-        self.utter_start = 0
-        self.utter_end = 0
-        self.utter_start_dispatch = 0
-        self.utter_end_dispatch = 0
-        self.dialogue_started = False
-        self.is_active = False
-        self.completion = 0.0
+        self.asr_start_time = 0.0
+        self.asr_end_time = 0.0
 
+        self.turn_completed = 0.0
+
+
+class AgentState:
+    def __init__(self):
+        self.name = "agent"
         self.utterance = ""
-        self.audio = None
-        self.loop_states = []
+        self.completion = 0.0
+        self.planned_utterance = ""
 
-    def to_dict(self):
-        return {
-            "utter_start": self.utter_start,
-            "utter_end": self.utter_end,
-            "utter_start_dispatch": self.utter_start_dispatch,
-            "utter_end_dispatch": self.utter_end_dispatch,
-            "completion": self.completion,
-            "utterance": self.utterance,
-            "audio": self.audio,
-            "loop_states": self.loop_states,
-        }
+        self.speech_start_time = 0.0
+        self.speech_end_time = 0.0
+
+        self.turn_completed = 0.0
 
     def __repr__(self):
-        rep = ""
-        rep += "utter_start: %f\n" % self.utter_start
-        rep += "utter_end: %f\n" % self.utter_end
-        rep += "dialogue_started: %s\n" % self.dialogue_started
-        rep += "is_active: %s\n" % self.is_active
-        rep += "completion: %s\n" % self.completion
-        return rep
-
-    @property
-    def turn_duration(self):
-        """Return the time since the current utterance started.
-
-        Returns:
-            flaot: The time since the current utterance started.
-
-        """
-        return time.time() - self.utter_start
-
-    @property
-    def since_last_turn(self):
-        """Return the time since the last utterance ended.
-
-        Returns:
-            float: The time since the last utterance ended.
-
-        """
-        return time.time() - self.utter_end
-
-
-class HistoryTracker:
-    def __init__(self):
-        self.turns = []
-        self.speakers = []
-        self.states = []
-
-    def reset(self):
-        self.turns = []
-        self.speakers = []
-
-    def add_state(self, state, speaker):
-        s = state.to_dict()
-        s["speaker"] = speaker
-        self.states.append(s)
-
-    def add_turn_utterance(self, text, speaker):
-        self.turns.append(text)
-        self.speakers.append(speaker)
-
-    def get_dialog(self):
-        s = "History"
-        for turn, speaker in zip(self.turns, self.speakers):
-            if speaker == "me":
-                s += "\nMe: " + turn
-            else:
-                s += "\n\t\tOther: " + turn
+        s = "AgentState"
+        for k, v in self.__dict__.items():
+            s += f"\n{k}: {v}"
+        s += "\n" + "-" * 30
         return s
 
+
+class Memory:
+    def __init__(self):
+        self.turns = []
+        self.start_time = 0.0
+
+    def get_context_text(self):
+        if len(self.turns) == 0:
+            return None
+
+        utterances = []
+        last_utt = self.turns[0]["utterance"]
+        last_name = self.turns[0]["name"]
+        for turn in self.turns[1:]:
+            if turn["utterance"] == "":
+                continue
+            if last_name == turn["name"]:  # consecutive turns
+                last_utt = last_utt + " " + turn["utterance"]
+            else:
+                last_utt = re.sub("^\s", "", last_utt)
+                last_utt = re.sub("$\s", "", last_utt)
+                last_utt = re.sub("\s\s+", " ", last_utt)
+                utterances.append(last_utt)
+                last_utt = turn["utterance"]
+                last_name = turn["name"]
+
+        last_utt = re.sub("^\s", "", last_utt)
+        last_utt = re.sub("$\s", "", last_utt)
+        last_utt = re.sub("\s\s+", " ", last_utt)
+        utterances.append(last_utt)
+        return utterances
+
+    def save(self, savepath):
+        data = {"start_time": self.start_time, "turns": self.turns}
+        write_json(data, savepath)
+        print("Saved memory -> ", savepath)
+
     def __repr__(self):
-        return self.states
+        s = "Memory"
+        for t in self.turns:
+            s += "\n" + str(t)
+        s += "\n" + "=" * 50
+        return s
 
-    def __len__(self):
-        return len(self.turns)
+    def __getitem__(self, idx):
+        return self.turns[idx]
 
-    def get_turns(self):
-        return self.turns.copy()
+    def update(self, turn):
+        if turn["utterance"] != "":
+            self.turns.append(turn)
 
 
-class TurnTakingBase(AbstractModule):
-    SLEEP_TIME = 0.1
-    EVENT_SILENCE = "silence"
+################################################################################
+
+
+class CentralNervousSystem(AbstractModule):
+    """
+    The central nervous system of the agent.
+    This is an incremental module which connects Hearing (ASR) & Speech (TTS, AudioDispatcher, AudioStreamer)
+    """
 
     @staticmethod
     def input_ius():
-        return [SpeechRecognitionIU, DispatchedAudioIU, VadIU]
+        return [SpeechRecognitionIU, DispatchedAudioIU, SpeechIU]
 
     @staticmethod
     def output_iu():
         return GeneratedTextIU
 
-    def __init__(
-        self,
-        other_active_silence_time=0.1,
-        first_utterance=True,
-        verbose=False,
-        **kwargs,
-    ):
-        """Initializes the class with the flag of wether the agent should start
-        the conversation or wait until the interlocutor starts the conversation.
-
-        Args:
-            first_utterance (bool): Whether this agent starts the conversation
-        """
+    def __init__(self, verbose=False, **kwargs):
         super().__init__(**kwargs)
-        self.first_utterance = first_utterance
-        self.dialogue_finished = False
-        self.dialogue_started = False
         self.verbose = verbose
 
-        self.history = HistoryTracker()
-        self.me = SpeakerState()
-        self.other = SpeakerState()
-        self.current_utterance = ""  # stored utterance if we do not which to take the turn even with asr.final=True
-        self.last_vad_is_speaking = True
+        # Memory
+        self.user = UserState()
+        self.agent = AgentState()
+        self.memory = Memory()
+        self.utterance_history = []
 
-        # EOT/turn-taking
-        self.eot_prob_min = 0.1
-        self.other_active_silence_time = other_active_silence_time
+        # Activity
+        self.agent_speech_ongoing = False
+        self.agent_last_speech_end_time = 0.0
 
-        self.initial_utterance = "Hello there, how can I help you?"
-        self.suspended = False
-
-    def process_iu(self, input_iu):
-        if isinstance(input_iu, SpeechRecognitionIU):
-            self.listen_other(input_iu)
-        elif isinstance(input_iu, VadIU):
-            self.handle_vad(input_iu)
-        elif isinstance(input_iu, DispatchedAudioIU):
-            self.listen_self(input_iu)
-        return None
-
-    def setup(self):
-        """Sets the dialogue_finished flag to false. This may be overwritten
-        by a class to setup the dialogue manager."""
-        self.dialogue_finished = False
-
-    def prepare_run(self):
-        """Prepares the dialogue_loop and the DialogueState of the agent and the
-        interlocutor by resetting the timers.
-        This method starts the dialogue_loop."""
-        self.reset_states()
-        t = threading.Thread(target=self.dialogue_loop)
-        t.start()
-
-    def reset_states(self):
-        """Reset the timers for self and the interlocutor.
-
-        This method is used in the begining of the dialogue to avoid strange
-        behavior when no utterance has preceeded.
-        """
-        self.me.reset()
-        self.other.reset()
-        self.history.reset()
-        self.dialogue_finished = False
-
-    def shutdown(self):
-        """Sets the dialogue_finished flag that eventually terminates the
-        dialogue_loop."""
-        self.dialogue_finished = True
+        self.user_asr_active = False
+        self.user_last_asr_end_time = 0.0
 
     @property
-    def both_speak(self):
-        """Whether both agents are currently speaking..
-
-        Returns:
-            bool: Whether both agents are currently speaking
-        """
-        return self.me.is_active and self.other.is_active
+    def both_inactive(self):
+        return not self.user_asr_active and not self.agent_speech_ongoing
 
     @property
-    def both_silent(self):
-        """Whether both agents are currently not speaking
-
-        Returns:
-            bool: Whether both agents are currently not speaking
-        """
-        return not self.me.is_active and not self.other.is_active
+    def both_active(self):
+        return self.user_asr_active and self.agent_speech_ongoing
 
     @property
-    def only_i_speak(self):
-        """Whether this agent is speaking and the interlocutor is silent
-
-        Returns:
-            bool: Whether this agent is speaking and the interlocutor is silent
-        """
-        return self.me.is_active and not self.other.is_active
+    def only_user_active(self):
+        return self.user_asr_active and not self.agent_speech_ongoing
 
     @property
-    def only_they_speak(self):
-        """Whether the interlocutor is speaking and this agent is silent
+    def only_agent_active(self):
+        return not self.user_asr_active and self.agent_speech_ongoing
 
-        Returns:
-            bool: Whether the interlocutor is speaking and this agent is silent
-        """
-        return not self.me.is_active and self.other.is_active
+    def finalize_user(self):
+        self.user.turn_completed = time.time()
+        self.memory.update(self.user.__dict__)
+        self.user = UserState()
 
-    def generate_response(self):
-        json_data = {"text": self.history.get_turns()}
-        response = requests.post(URL_SAMPLE, json=json_data)
-        d = json.loads(response.content.decode())
-        self.next_response = d["response"]
+    def finalize_agent(self):
+        self.agent.turn_completed = time.time()
+        if self.agent.completion >= 1:
+            self.agent.utterance = self.agent.planned_utterance
+        self.memory.update(self.agent.__dict__)
+        self.agent = AgentState()
 
-    def listen_self(self, input_iu):
-        """Handles the state of the agents own dispatched audio.
-
-        This method sets the utter_end and utter_start flag of the DialogueState
-        object that corresponds to its own state.
-        After an IU is recieved that changes the iterlocutor own state (to
-        speaking or silent), the suspend flag is set to False so that the
-        dialogue loop may continue handling the current dialogue state.
-
-        Args:
-            input_iu (DispatchedAudioIU): The dispatched audio IU of the agents
-                AudioDispatcherModule.
-        """
-        self.me.is_active = input_iu.is_dispatching
-        self.me.completion = input_iu.completion
-        if self.me.completion == 1:
-            self.me.is_active = False
-
-        if self.me.is_active and not input_iu.is_dispatching:
-            # self.me.utter_end = time.time()
-            self.me.utter_end_dispatch = time.time()
-            self.history.add_state(self.me)
-            print("added self-start")
-            self.me.reset()
-            self.suspended = False
-        elif not self.me.is_active and input_iu.is_dispatching:
-            # self.me.utter_start = time.time()
-            self.me.utter_start_dispatch = time.time()
-            self.suspended = False
-
-    def start_speaking(self):
-        """
-        Adds our planned utterances to the dialog state and pass IU to the TTS
-        """
-        self.history.add_turn_utterance(self.next_response, speaker="me")
-        self.me.utterance = self.next_response
-        self.me.utter_start = time.time()
-        print(C.blue + "Agent: " + self.next_response + C.end)
-        output_iu = self.create_iu(None)
-        output_iu.payload = self.next_response
+    def start_speech(self, text=None):
+        self.agent_speech_ongoing = True
+        self.agent.speech_start_time = time.time()
+        # self.agent.update("speech_start", time.time() - self.start_time)
+        output_iu = self.create_iu()
+        if text is None:
+            output_iu.payload = self.agent.planned_utterance
+        else:
+            output_iu.payload = text
         output_iu.dispatch = True
         self.append(output_iu)
 
-    def handle_vad(self, input_iu):
-        if self.last_vad_is_speaking != input_iu.is_speaking:
-            # print(C.yellow + "VAD")
-            # print("\tis_speaking: ", input_iu.is_speaking)
-            # print("\tsilence_time: ", input_iu.silence_time)
-            # print(C.end)
-            self.last_vad_is_speaking = input_iu.is_speaking
-
-        if self.other.is_active and not input_iu.is_speaking:
-            self.other.is_active = False
-        elif not self.other.is_active and input_iu.is_speaking:
-            self.other.is_active = True
-
-    def silence(self):
-        output_iu = self.create_iu(None)
+    def stop_speech(self, finalize=True):
+        """Creates a dummy IUs with dispatch flag false and appends to output. This aborts the speech in the tts"""
+        now = time.time()
+        self.agent.speech_end_time = now
+        self.agent_last_speech_end_time = now
+        self.agent_speech_ongoing = False
+        if finalize:
+            self.finalize_agent()
+        output_iu = self.create_iu()
         output_iu.payload = ""
-        output_iu.dispatched = False
+        output_iu.dispatch = False
         self.append(output_iu)
-        self.event_call(self.EVENT_SILENCE)
-        self.suspended = True
 
-    def dialogue_loop(self):
+    def process_iu(self, input_iu):
+        if isinstance(input_iu, SpeechRecognitionIU):
+            self.asr(input_iu)
+        elif isinstance(input_iu, SpeechIU):
+            self.tts_activity(input_iu)
+        elif isinstance(input_iu, DispatchedAudioIU):
+            self.audio_dispatcher_activity(input_iu)
+
+    def tts_activity(self, input_iu):
+        print("TTS")
+        if self.verbose:
+            print("self tts dispatch: ", input_iu.dispatch)
+
+        if input_iu.dispatch:
+            self.suspend = False
+        else:
+            if self.user_asr_active:
+                print(C.red, "Interrupted by user", C.end)
+
+    def audio_dispatcher_activity(self, input_iu):
         """
-        The dialogue loop that continuously checks the state of the agent and
-        the interlocutor to determine what action to perform next.
+        Listen to
         """
-        last_state = -1
-        while not self.dialogue_finished:
-            # Suspend execution until something happens
-            # not_first = True
-            # while self.suspended:
-            #     if not_first:
-            #         print("suspend")
-            #         not_first = False
-            #     time.sleep(self.SLEEP_TIME)
+        self.agent.completion = input_iu.completion
+        self.agent.utterance = input_iu.completion_words
 
-            if not self.dialogue_started and self.first_utterance:
-                self.reset_states()
-                self.dialogue_started = True
-                self.next_response = self.initial_utterance
-                self.start_speaking()
-                self.suspended = True
+        if input_iu.completion >= 1:
+            print(C.green, "Speak DONE", C.end)
+            self.agent_speech_ongoing = False
+            now = time.time()
+            self.agent.speech_end_time = now
+            self.agent_last_speech_end_time = now
+        elif input_iu.is_dispatching:
+            if not self.agent_speech_ongoing:
+                self.agent_speech_ongoing = True
 
-            if self.both_silent:
-                # 0
-                if self.verbose:
-                    if last_state != 0:
-                        print(C.yellow + "\tState: BOTH silent" + C.end)
-                        last_state = 0
-            elif self.only_i_speak:
-                # 1
-                if self.verbose:
-                    if last_state != 1:
-                        print(C.blue + "\tState: I speak" + C.end)
-                        last_state = 1
-            elif self.only_they_speak:
-                # 2
-                if self.verbose:
-                    if last_state != 2:
-                        print(C.cyan + "\tState: THEY speak" + C.end)
-                        last_state = 2
-            elif self.both_speak:
-                if self.verbose:
-                    if last_state != 3:
-                        print(C.pink + "\tState: BOTH SPEAK" + C.end)
-                        last_state = 3
+    def asr(self, input_iu):
+        """Process the ASR input"""
 
-                # self.silence()
-            time.sleep(self.SLEEP_TIME)
+        # activate user-asr state and record when the ASR-onset time
+        if not self.user_asr_active:
+            self.user_asr_active = True
+            self.user.asr_start_time = time.time()
+            if self.verbose:
+                print(C.yellow + f"ASR Onset: {self.user_asr_active}" + C.end)
 
-
-class TurnTakingModule(TurnTakingBase):
-    @staticmethod
-    def name():
-        return "Turn Taking DM Module"
-
-    @staticmethod
-    def description():
-        return "A dialogue manager that uses eot predictions for turn taking"
-
-    def listen_other(self, input_iu):
-        """
-        Listening to the other interlocutor and estimate if they are done or not.
-        """
-        self.other.is_active = True
+        # update our preliminary utterance
+        self.user.prel_utterance = self.user.utterance + input_iu.text
         if input_iu.final:
-            # Abort the user says goodbye
-            if "goodbye" in input_iu.text or "bye" in input_iu.text:
-                self.next_response = "Goodbye."
-                self.start_speaking()
-                self.shutdown()
+            self.user_asr_active = False  # asr non active
+            now = time.time()
+            self.user.asr_end_time = now
+            self.user_last_asr_end_time = now
+
+            # update the utterance
+            self.user.utterance = self.user.prel_utterance
+
+            if self.verbose:
+                print(C.green + "ASR Final" + C.end)
+
+    def run(self, **kwargs):
+        self.memory.start_time = time.time()
+        super().run(**kwargs)
+
+
+class FrontalCortexBase:
+    DUMMY_RESPONSE = "Now it's my time to talk."
+    LOOP_TIME = 0.05  # 50ms  update frequency
+
+    def __init__(
+        self,
+        central_nervous_system,
+        dm=None,
+        speak_first=True,
+        fallback_duration=4,
+        verbose=False,
+    ):
+        self.cns = central_nervous_system
+        self.speak_first = speak_first
+        self.dm = dm
+        self.verbose = verbose
+
+        self.dialog_ended = False
+        self.suspend = False
+
+        self.fallback_duration = fallback_duration
+
+    def check_utterance_dialog_end(self, text=None):
+        if "goodbye" in text or "bye" in text:
+            return True
+        return False
+
+    def is_interrupted(self):
+        if self.cns.agent.completion < 0.8:
+            return True
+        return False
+
+    def fallback_silence(self):
+        now = time.time()
+        agent_silence = now - self.cns.agent_last_speech_end_time
+        user_silence = now - self.cns.user_last_asr_end_time
+        latest_activity_time = min(agent_silence, user_silence)
+        if latest_activity_time >= self.fallback_duration:
+            print("FALLBACK")
+            context = self.cns.memory.get_context_text()
+            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response(
+                context
+            )
+            self.cns.start_speech(self.cns.agent.planned_utterance)
+
+    def dialog_loop(self):
+        raise NotImplementedError("dialog loop not implemented")
+
+    def start_loop(self):
+        """Prepares the dialogue_loop and the DialogueState of the agent and the
+        interlocutor by resetting the timers.
+        This method starts the dialogue_loop."""
+        t = threading.Thread(target=self.dialog_loop)
+        self.cns.start_time = time.time()
+        self.cns.user.asr_end_time = time.time()
+        t.start()
+
+
+class SimpleFC(FrontalCortexBase):
+    """
+    Starts the dialog by speaking its `DUMMY_RESPONSE`. Listens while the user asr is active and only does a fallback
+    action which executes the dummy response if the conversation has been inactive for at leat `fallback_duration`
+    seconds.
+
+    Never updates the memory...
+    """
+
+    def dialog_loop(self):
+        """
+        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
+        state.
+
+        """
+        if self.speak_first:
+            if self.dm is not None:
+                self.cns.agent.planned_utterance = self.dm.next_question()
             else:
-                prel_current_utterance = self.current_utterance + " " + input_iu.text
-                prel_current_utterance = re.sub("\s\s+", " ", prel_current_utterance)
+                self.cns.agent.planned_utterance = self.DUMMY_RESPONSE
+            self.cns.start_speech(self.cns.agent.planned_utterance)
 
-                # Add preliminary utterance to history
-                preliminary_turns = self.history.get_turns()
-                preliminary_turns.append(prel_current_utterance)
-                trp = self.get_eot(preliminary_turns)  # estimate eot prob
+        last_state = None
+        while not self.dialog_ended:
+            time.sleep(self.LOOP_TIME)
 
-                # if the asr is final and our trp-model puts a high enought likelihood of turn-shift we decide that it is a
-                # turn-shift. We add the previous utterance to the history and generate a response.
-                if trp >= self.eot_prob_min:
-                    print(C.green + f"\tEOT recognized TRP: {trp}" + C.end)
-                    print(C.yellow + "User: " + prel_current_utterance.strip() + C.end)
-                    self.history.add_turn_utterance(
-                        prel_current_utterance, speaker="other"
-                    )
-                    self.other.utter_end = time.time()
-                    self.other.is_active = False
-                    self.current_utterance = ""  # reset current_utterance
-                    self.generate_response()
-                    self.start_speaking()
+            if self.suspend:
+                continue
+
+            if self.cns.both_inactive:
+                if self.verbose and last_state != "both_inactive":
+                    print("BOTH INACTIVE")
+                    last_state = "both_inactive"
+                now = time.time()
+                agent_silence = now - self.cns.agent_last_speech_end_time
+                user_silence = now - self.cns.user_last_asr_end_time
+                latest_activity_time = min(agent_silence, user_silence)
+                if latest_activity_time >= self.fallback_duration:
+                    self.cns.start_speech(self.cns.agent.planned_utterance)
+            elif self.cns.both_active:
+                if self.verbose and last_state != "double_talk":
+                    print("DOUBLE TALK")
+                    last_state = "double_talk"
+            elif self.cns.only_user_active:
+                if self.verbose and last_state != "only_user":
+                    print("USER")
+                    last_state = "only_user"
+            else:
+                if self.verbose and last_state != "only_agent":
+                    print("AGENT")
+                    last_state = "only_agent"
+
+
+class ASRFC(FrontalCortexBase):
+    """
+    Starts the dialog by speaking its `DUMMY_RESPONSE`. Listens while the user asr is active and only does a fallback
+    action which executes the dummy response if the conversation has been inactive for at leat `fallback_duration`
+    seconds.
+    """
+
+    BOTH_ACTIVE = "double_talk"
+    BOTH_INACTIVE = "silence"
+    ONLY_USER = "only_user"
+    ONLY_AGENT = "only_agent"
+
+    def __init__(self, dm, **kwargs):
+        super().__init__(**kwargs)
+        self.dm = dm
+
+    def respond_or_listen(self):
+        end = self.check_utterance_dialog_end(self.cns.user.utterance)
+        self.cns.finalize_user()
+        if end:
+            self.dialog_ended = True
+        else:
+            context = self.cns.memory.get_context_text()
+            (
+                self.cns.agent.planned_utterance,
+                self.dialog_ended,
+            ) = self.dm.get_response(context)
+            self.cns.start_speech(self.cns.agent.planned_utterance)
+
+    def dialog_loop(self):
+        """
+        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
+        state.
+
+        """
+        if self.speak_first:
+            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response()
+            self.cns.start_speech(self.cns.agent.planned_utterance)
+
+        last_state = "both_inactive"
+        while not self.dialog_ended:
+            time.sleep(self.LOOP_TIME)
+
+            if self.cns.both_inactive:
+                if self.verbose and last_state != self.BOTH_INACTIVE:
+                    print("BOTH INACTIVE")
+
+                if last_state == self.ONLY_USER:
+                    self.respond_or_listen()
+
+                elif last_state == self.ONLY_AGENT:
+                    print("finalize agent")
+                    self.cns.finalize_agent()
                 else:
-                    self.current_utterance = prel_current_utterance
-                    print(C.red + f"\tEOT ongoing TRP: {trp}" + C.end)
-                    print(C.red + "\ttext: ", self.current_utterance + C.end)
+                    self.fallback_silence()
+                last_state = self.BOTH_INACTIVE
 
-    def get_eot(self, text):
+            elif self.cns.both_active:
+                if self.verbose and last_state != self.BOTH_ACTIVE:
+                    print("DOUBLE TALK")
+
+                if last_state == self.ONLY_AGENT:
+                    if self.is_interrupted():
+                        self.cns.stop_speech()
+                elif last_state == self.ONLY_USER:
+                    finalize = True
+                    if self.cns.agent.completion < 0.2:
+                        finalize = False
+                    self.cns.stop_speech(finalize)
+
+                last_state = self.BOTH_ACTIVE
+
+            elif self.cns.only_user_active:
+                if self.verbose and last_state != self.ONLY_USER:
+                    print("USER")
+                last_state = self.ONLY_USER
+            else:
+                if self.verbose and last_state != self.ONLY_AGENT:
+                    print("AGENT")
+                last_state = self.ONLY_AGENT
+        print("======== DIALOG DONE ========")
+
+
+class ASRLMFC(FrontalCortexBase):
+    """
+    Starts the dialog by speaking its `DUMMY_RESPONSE`. Listens while the user asr is active and only does a fallback
+    action which executes the dummy response if the conversation has been inactive for at leat `fallback_duration`
+    seconds.
+    """
+
+    BOTH_ACTIVE = "double_talk"
+    BOTH_INACTIVE = "silence"
+    ONLY_USER = "only_user"
+    ONLY_AGENT = "only_agent"
+
+    def __init__(self, dm, trp_threshold=0.1, **kwargs):
+        super().__init__(**kwargs)
+        self.dm = dm
+        self.trp_threshold = trp_threshold
+
+    def lm_eot(self, text):
         json_data = {"text": text}
         response = requests.post(URL_TRP, json=json_data)
         d = json.loads(response.content.decode())
         return d["trp"][-1]  # only care about last token
 
+    def respond_or_listen(self):
+        context = self.cns.memory.get_context_text()
+        current_utt = re.sub("^\s", "", self.cns.user.utterance)
+        current_utt = re.sub("$\s", "", current_utt)
+        current_utt = re.sub("\s\s+", " ", current_utt)
+        context.append(current_utt)
 
-class SimpleTurnTakingModule(TurnTakingBase):
-    @staticmethod
-    def name():
-        return "Turn Taking DM Module"
-
-    @staticmethod
-    def description():
-        return "A dialogue manager that uses eot predictions for turn taking"
-
-    def listen_other(self, input_iu):
-        """
-        Listening to the other interlocutor and estimate if they are done or not.
-        """
-        if input_iu.final:
-            # Abort the user says goodbye
-            if "goodbye" in input_iu.text or "bye" in input_iu.text:
-                self.next_response = "Goodbye."
-                self.start_speaking()
-                self.shutdown()
+        for i, utt in enumerate(context):
+            if i % 2 == 0:
+                print(C.blue + utt, C.end)
             else:
-                self.history.add_turn_utterance(input_iu.text, speaker="other")
-                print(C.yellow + f"EOT" + C.end)
-                print(C.yellow + input_iu.text + C.end)
-                self.generate_response()
-                self.start_speaking()
+                print(C.yellow + utt, C.end)
 
+        trp = self.lm_eot(context)
 
-class Agent(object):
-    def __init__(
-        self,
-        chunk_time=0.01,
-        sample_rate=16000,
-        bytes_per_sample=2,
-        speech_chunk_time=0.1,
-        use_backchannel_module=False,
-        other_active_silence_time=0.1,
-        bc_cooldown=2.0,
-        bc_trp_thresh_min=0.1,
-        bc_trp_thresh_max=0.3,
-        bc_vad_silence_time=0.1,
-        simple=False,
-        verbose=False,
-        debug=False,
-    ):
-        self.chunk_time = chunk_time
-        self.sample_rate = sample_rate
-        self.bytes_per_sample = bytes_per_sample
-        self.speech_chunk_time = speech_chunk_time
-        self.use_backchannel_module = use_backchannel_module
-        self.other_active_silence_time = other_active_silence_time
-        self.simple = simple
-
-        # Percecption/Senses
-        self.hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=debug)
-        self.speech = Speech(
-            speech_chunk_time, sample_rate, bytes_per_sample, tts_client="amazon"
-        )
-        if self.simple:
-            self.turn_taking = SimpleTurnTakingModule(
-                first_utterance=True,
-                other_active_silence_time=other_active_silence_time,
-                verbose=verbose,
+        if trp >= self.trp_threshold:
+            print(C.green + f"EOT recognized: {round(trp, 3)}" + C.end)
+            self.cns.finalize_user()
+            context = self.cns.memory.get_context_text()
+            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response(
+                context
             )
+            self.cns.start_speech(self.cns.agent.planned_utterance)
         else:
-            self.turn_taking = TurnTakingModule(
-                first_utterance=True,
-                other_active_silence_time=other_active_silence_time,
-                verbose=verbose,
-            )
-            if use_backchannel_module:
-                self.bc_cooldown = bc_cooldown
-            self.bc_trp_thresh_min = bc_trp_thresh_min
-            self.bc_trp_thresh_max = bc_trp_thresh_max
-            self.bc = BackChannelModule(
-                cooldown=bc_cooldown,
-                bc_trp_thresh_min=bc_trp_thresh_min,
-                bc_trp_thresh_max=bc_trp_thresh_max,
-                vad_time_min=bc_vad_silence_time,
-            )
+            print(C.red + f"listen: {1-round(trp, 3)}" + C.end)
+            if random.random() < 0.4:
+                self.cns.start_speech("Go on.")
 
-        self.connect_components()
+        if self.check_utterance_dialog_end(current_utt):
+            self.dialog_ended = True
+            return True
 
-    def connect_components(self):
-        self.hearing.connect_components()
-        self.hearing.vad.subscribe(self.turn_taking)  #  VadIU
-        self.hearing.asr.subscribe(self.turn_taking)  # SpeechRecognitionIU
-        self.turn_taking.subscribe(self.speech.tts)  # DispatchedAudioIU
-        self.speech.audio_dispatcher.subscribe(self.turn_taking)  # listen_self
+    def dialog_loop(self):
+        """
+        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
+        state.
 
-        if self.use_backchannel_module:
-            self.hearing.vad.subscribe(self.bc)
-            self.hearing.asr.subscribe(self.bc)
+        """
+        if self.speak_first:
+            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response()
+            self.cns.start_speech(self.cns.agent.planned_utterance)
 
-    @staticmethod
-    def add_arguments(parent_parser):
-        """ Specify the hyperparams for this LightningModule """
-        parser = ArgumentParser(parents=[parent_parser], add_help=False)
+        last_state = "both_inactive"
+        while not self.dialog_ended:
+            time.sleep(self.LOOP_TIME)
 
-        # Audio settings
-        parser.add_argument("--bytes_per_sample", type=int, default=2)
-        parser.add_argument("--input_chunk_time", type=float, default=0.01)
-        parser.add_argument("--input_sample_rate", type=int, default=16000)
-        parser.add_argument("--speech_chunk_time", type=float, default=0.1)
+            if self.cns.both_inactive:
+                if self.verbose and last_state != self.BOTH_INACTIVE:
+                    print("BOTH INACTIVE")
 
-        # TurnTaking
-        parser.add_argument("--simple", action="store_true", help="Use the ASR as EOT")
-        parser.add_argument("--other_active_silence_time", type=float, default=0.1)
+                if last_state == self.ONLY_USER:
+                    end = self.respond_or_listen()
+                    if end:
+                        print("END EVERYTHING")
+                        self.dialog_ended = True
+                        break
+                elif last_state == self.ONLY_AGENT:
+                    print("finalize agent")
+                    self.cns.finalize_agent()
+                else:
+                    self.fallback_silence()
+                last_state = self.BOTH_INACTIVE
 
-        # Backchannel
-        parser.add_argument("--bc", action="store_true")
-        parser.add_argument("--bc_vad_silence_time", type=float, default=0.1)
-        parser.add_argument("--bc_trp_thresh_min", type=float, default=0.1)
-        parser.add_argument("--bc_trp_thresh_max", type=float, default=0.3)
-        parser.add_argument("--verbose", action="store_true")
-        return parser
+            elif self.cns.both_active:
+                if self.verbose and last_state != self.BOTH_ACTIVE:
+                    print("DOUBLE TALK")
 
-    def run(self):
-        self.hearing.run_components()
-        self.speech.run_components()
-        if self.use_backchannel_module:
-            self.bc.run()
-        self.turn_taking.setup()
-        self.turn_taking.prepare_run()
-        self.turn_taking.run()
+                if last_state == self.ONLY_AGENT:
+                    if self.is_interrupted():
+                        self.cns.stop_speech()
+                elif last_state == self.ONLY_USER:
+                    finalize = True
+                    if self.cns.agent.completion < 0.2:
+                        finalize = False
+                    self.cns.stop_speech(finalize)
 
-    def stop(self):
-        self.hearing.stop_components()
-        self.speech.stop_components()
-        if self.use_backchannel_module:
-            self.bc.stop()
-        print(self.turn_taking.history.states)
-        self.turn_taking.stop()
+                last_state = self.BOTH_ACTIVE
+            elif self.cns.only_user_active:
+                if self.verbose and last_state != self.ONLY_USER:
+                    print("USER")
+                last_state = self.ONLY_USER
+            else:
+                if self.verbose and last_state != self.ONLY_AGENT:
+                    print("AGENT")
+                last_state = self.ONLY_AGENT
+        print("======== DIALOG DONE ========")
 
 
-def run_agent(simple=False):
-    agent = Agent(use_backchannel_module=True, simple=simple)
-    agent.run()
-    input()
-    agent.stop()
+def test_central_nervous_system(args):
+    from retico.agent import Hearing, Speech
 
-
-def test_components():
-    sample_rate = 16000
-    chunk_time = 0.01
-    bytes_per_sample = 2
-    print("sample_rate: ", sample_rate)
-    print("chunk_time: ", chunk_time)
-    print("bytes_per_sample: ", bytes_per_sample)
-    hearing = Hearing(chunk_time, sample_rate, bytes_per_sample, debug=False)
-    bc = BackChannelModule(
-        cooldown=2.0, bc_trp_thresh_min=0.1, bc_trp_thresh_max=0.4, vad_time_min=0.1
+    hearing = Hearing(
+        chunk_time=args.chunk_time,
+        sample_rate=args.sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        use_asr=True,
+        record=False,
+        debug=False,
     )
+    speech = Speech(
+        chunk_time=args.speech_chunk_time,
+        sample_rate=args.speech_sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        tts_client="amazon",
+        output_word_times=True,
+        debug=False,
+    )
+    cns = CentralNervousSystem(verbose=args.verbose)
+    frontal = SimpleFC(central_nervous_system=cns, verbose=args.verbose)
 
-    # speech = Speech(0.1, sample_rate, bytes_per_sample, tts_client="amazon")
-    # speech = TTSDummy()
-    # agent = TurnTakingAgent()
+    hearing.asr.subscribe(cns)
+    speech.audio_dispatcher.subscribe(cns)
+    speech.tts.subscribe(cns)
+    cns.subscribe(speech.tts)
 
-    # Connect Components
-    hearing.connect_components()
-
-    # Connect bc to hearing
-    hearing.vad.subscribe(bc)
-    hearing.asr.subscribe(bc)
-
-    # Run
     hearing.run_components()
-    bc.run()
+    speech.run()
+    cns.run()  # starts the loop
 
+    frontal.start_loop()
     input()
 
     hearing.stop_components()
-    bc.stop()
+    speech.tts.shutdown()
+    speech.stop()
+    cns.stop()
+
+
+def test_asr_fc(args):
+    from retico.agent import Hearing, Speech
+    from retico.agent.dm import DM
+
+    hearing = Hearing(
+        chunk_time=args.chunk_time,
+        sample_rate=args.sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        use_asr=True,
+        record=False,
+        debug=False,
+    )
+    speech = Speech(
+        chunk_time=args.speech_chunk_time,
+        sample_rate=args.speech_sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        tts_client="amazon",
+        output_word_times=True,
+        debug=False,
+    )
+    cns = CentralNervousSystem(verbose=args.verbose)
+    dm = DM()
+    frontal = ASRFC(
+        dm=dm,
+        central_nervous_system=cns,
+        fallback_duration=args.fallback_duration,
+        verbose=args.verbose,
+    )
+
+    hearing.asr.subscribe(cns)
+    speech.audio_dispatcher.subscribe(cns)
+    speech.tts.subscribe(cns)
+    cns.subscribe(speech.tts)
+
+    hearing.run_components()
+    speech.run()
+    cns.run()  # starts the loop
+
+    frontal.start_loop()
+
+    input()
+
+    cns.memory.save("dialog_log.json")
+    hearing.stop_components()
+    speech.tts.shutdown()
+    speech.stop()
+    cns.stop()
+
+
+def test_asr_lm_fc(args):
+    from retico.agent import Hearing, Speech
+    from retico.agent.dm import DM
+
+    hearing = Hearing(
+        chunk_time=args.chunk_time,
+        sample_rate=args.sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        use_asr=True,
+        record=False,
+        debug=False,
+    )
+    speech = Speech(
+        chunk_time=args.speech_chunk_time,
+        sample_rate=args.speech_sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        tts_client="amazon",
+        output_word_times=True,
+        debug=False,
+    )
+    cns = CentralNervousSystem(verbose=args.verbose)
+    dm = DM()
+    frontal = ASRLMFC(
+        dm=dm,
+        central_nervous_system=cns,
+        trp_threshold=args.trp,
+        fallback_duration=args.fallback_duration,
+        verbose=args.verbose,
+    )
+
+    hearing.asr.subscribe(cns)
+    speech.audio_dispatcher.subscribe(cns)
+    speech.tts.subscribe(cns)
+    cns.subscribe(speech.tts)
+
+    hearing.run_components()
+    speech.run()
+    cns.run()  # starts the loop
+
+    frontal.start_loop()
+
+    input("DIALOG\n")
+    cns.memory.save("dialog_asr_lm.json")
+
+    hearing.stop_components()
+    speech.tts.shutdown()
+    speech.stop()
+    cns.stop()
 
 
 if __name__ == "__main__":
-    from argparse import ArgumentParser
+    import argparse
 
-    parser = ArgumentParser()
-    parser = Agent.add_arguments(parser)
+    parser = argparse.ArgumentParser(description="DialogState")
+    parser.add_argument("--chunk_time", type=float, default=0.01)
+    parser.add_argument("--sample_rate", type=int, default=16000)
+    parser.add_argument("--speech_chunk_time", type=float, default=0.1)
+    parser.add_argument("--speech_sample_rate", type=int, default=16000)
+    parser.add_argument("--bytes_per_sample", type=int, default=2)
+    parser.add_argument("--trp", type=float, default=0.1)
+    parser.add_argument("--fallback_duration", type=float, default=2)
+    parser.add_argument("--verbose", action="store_true")
+    parser.add_argument("--test", type=str, default="cns")
     args = parser.parse_args()
-    for k, v in vars(args).items():
-        print(f"{k}: {v}")
 
-    if args.simple:
-        print("Using Baseline ASR TurnTaking")
+    if args.test == "cns":
+        test_central_nervous_system(args)
+    elif args.test == "asr":
+        test_asr_fc(args)
+    elif args.test == "asrlm":
+        test_asr_lm_fc(args)
     else:
-        print("Using ASR + TurnGPT TurnTaking")
-
-    # run_agent(simple=args.simple)
-
-    agent = Agent(
-        chunk_time=args.input_chunk_time,
-        sample_rate=args.input_sample_rate,
-        bytes_per_sample=args.bytes_per_sample,
-        speech_chunk_time=args.speech_chunk_time,
-        other_active_silence_time=args.other_active_silence_time,
-        use_backchannel_module=args.bc,
-        bc_cooldown=args.bc_vad_silence_time,
-        bc_trp_thresh_min=args.bc_vad_silence_time,
-        bc_trp_thresh_max=args.bc_vad_silence_time,
-        bc_vad_silence_time=args.bc_vad_silence_time,
-        simple=args.simple,
-        verbose=args.verbose,
-        # debug=True,
-    )
-    agent.run()
-    input()
-    agent.stop()
-
-    # Some tests?
-    # Bot
-    "hello there how can I help you today?"
-
-    # me
-    "hi there"  # pause
-    "I would like to book a flight"
-
-    "I would like to fly to"  # pause
-    "paris"
-
-    "let's see"  # pause
-    "hmm next weekend please"
-    # Bot answer not deterministic
+        print(f"{args.test} not implemented. Try: [cns, asr]")
