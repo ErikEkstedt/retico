@@ -9,76 +9,14 @@ from retico.core.abstract import AbstractModule
 from retico.core.text.common import SpeechRecognitionIU, GeneratedTextIU
 from retico.core.audio.common import SpeechIU, DispatchedAudioIU
 
+from retico.agent.turntaking import SpeakerTurnState, TurnState
 from retico.agent.utils import Color as C
 
-"""
-Determine start of user turn  vad/asr
-Determine end   of user turn  vad/asr/eot
-
-TurnStates: Agent, User, Undecided
-
-    - User:  Listen to the user and wait for an EOT event
-    - Agent: Create speech until completed.
-        - listen to user and decide to continue or be silent
-    - Undecided: There is no clear occupant of the turn-floor.
-        - Context dependent action selection
-        - Both vs None
-        - Agent -> None -> ? Should we wait for response or take initiative?
-        - User -> None -> ? Should we reply?
-        - Agent -> Both -> ?  Are we at the end of our utterance or at the very beginning?
-        - User -> Both -> ? The agent produced overlap (not currently supposed to happen)
-"""
+from retico.agent.utils import Color as C
+from retico.agent.dm import DM
 
 
-class SpeakerTurnState:
-    def __init__(self, name=""):
-        self.name = name
-        self.current_utterance = ""
-        self.completion = 0
-        self.finalized = None
-
-    def update(self, property, value):
-        self.__setattr__(property, value)
-
-    def __repr__(self):
-        s = f"name: {self.name}\n"
-        for prop, val in vars(self).items():
-            if not prop == "name":
-                s += f"{prop}: {val}\n"
-        s += "-" * 50
-        return s
-
-    def finalize(self, time=0):
-        if self.name == "user":
-            if self.prel_utterance != self.current_utterance:
-                self.current_utterance = self.prel_utterance
-            self.prel_utterance = ""
-        self.finalized = time
-
-    def to_dict(self):
-        d = {}
-        for prop, value in vars(self).items():
-            d[prop] = value
-        return d
-
-
-class TurnState:
-    STATES = ["undecided", "agent", "user"]
-
-    def __init__(self, state, rel_start_time=0):
-        assert state in self.STATES, "State must be on of {self.STATES}"
-        self.state = state
-        self.time = time.time() - rel_start_time
-
-    def get(self, name):
-        return self.__getattribute__(name)
-
-
-class TurnTakingModule(AbstractModule):
-    TURN_STATES = ["undecided", "agent", "user"]
-    LOOP_TIME = 0.05
-    EVENT_DIALOG_FINISH = "event_dialog_finish"
-
+class BaselineModule(AbstractModule):
     @staticmethod
     def input_ius():
         return [SpeechRecognitionIU, DispatchedAudioIU, SpeechIU]
@@ -87,7 +25,116 @@ class TurnTakingModule(AbstractModule):
     def output_iu():
         return GeneratedTextIU
 
-    def __init__(self, eot=None, vad_slow=None, dm=None, verbose=False, **kwargs):
+    def __init__(self, dm=None, nlg=None, verbose=False, **kwargs):
+        super().__init__(**kwargs)
+
+        # NLG
+        self.dm = dm  # used for determined questions
+
+        self.dialog_ended = False
+        self.speak_first = True
+        self.max_silence_time = 4
+        self.verbose = verbose
+
+        self.user = SpeakerTurnState(name="user")
+        self.agent = SpeakerTurnState(name="agent")
+        self.history = []
+        self.utterance_history = []
+
+        # Keep track of its own activity
+        self.agent_turn_ongoing = False
+
+        # Keep track of user turn
+        self.user_asr_ongoing = False
+        self.user_asr_active = False  # ASR Activity
+
+        self.turn_state = None
+        self.turn_state_history = []
+
+    def run(self, **kwargs):
+        self.start_time = time.time()
+        self.turn_state = TurnState("undecided", self.start_time)
+        super().run(**kwargs)
+
+    def finalize_agent(self):
+        """
+        Called when the agent turn is finished. This can happen if the agent has completed their utterance and now waits
+        for a user response or if the user interrupts the agent before it has completed the utterance.
+        """
+        if self.agent.current_utterance != "":  # omit empty turns
+            self.agent.finalize(time.time() - self.start_time)
+            self.agent.current_utterance = self.agent.current_utterance.strip()
+            self.history.append(self.agent.to_dict())
+        self.agent = SpeakerTurnState("agent")  # new agent state for next turn
+        self.agent_turn_ongoing = False  # agent turn is done
+
+    def process_iu(self, input_iu):
+        if isinstance(input_iu, SpeechRecognitionIU):
+            self.asr(input_iu)
+        elif isinstance(input_iu, SpeechIU):
+            self.tts_activity(input_iu)
+        elif isinstance(input_iu, DispatchedAudioIU):
+            self.audio_dispatcher_activity(input_iu)
+
+    def tts_activity(self, input_iu):
+        if input_iu.dispatch:
+            self.agent_turn_ongoing = True
+            self.suspend = False
+        else:
+            if self.user_asr_ongoing:
+                print(C.red, "Interrupted by user", C.end)
+                self.finalize_agent()
+        self.update_turn_state()
+
+    def audio_dispatcher_activity(self, input_iu):
+        """
+        Self-listen. The agent processes the IUs produced by the AudioDispatcher where it has access to the percentage
+        completed `completion` and the words completed `current_utterance`.
+        """
+        self.agent.update("completion", input_iu.completion)
+        self.agent.update("current_utterance", input_iu.completion_words)
+
+        if input_iu.completion >= 1:  # the agent has completed its utterance
+            print(C.green, "Speak DONE", C.end)
+            self.agent_turn_ongoing = False
+            self.agent.update("audio_end", time.time() - self.start_time)
+            self.agent.update("current_utterance", self.agent.planned_utterance)
+            self.finalize_agent()
+        elif input_iu.is_dispatching:
+            if not self.agent_turn_ongoing:
+                self.agent_turn_ongoing = True
+                self.agent.update("audio_start", time.time() - self.start_time)
+
+    def asr(self, input_iu):
+        if not self.user_asr_active:
+            # record when the ASR-onset time
+            self.user.update("asr_onset", time.time() - self.start_time)
+            self.user_asr_active = True
+            # print(C.yellow + f"ASR Onset: {self.user_asr_active}" + C.end)
+
+        self.user.prel_utterance = self.user.current_utterance + input_iu.text
+        if not self.detect_end_of_dialog(input_iu):
+            if input_iu.final:
+                self.user_asr_active = False
+                self.user.update("asr_final", time.time() - self.start_time)
+                self.user.current_utterance = self.user.prel_utterance
+
+                if self.eot is None:
+                    # print(C.green + "ASR EOT" + C.end)
+                    self.user_turn_ongoing = False
+                    self.finalize_user()
+                    self.update_turn_state()
+        self.update_turn_state()
+
+
+class TurnTakingModule(AbstractModule):
+    TURN_STATES = ["undecided", "agent", "user"]
+    LOOP_TIME = 0.05
+    EVENT_DIALOG_FINISH = "event_dialog_finish"
+
+    def __init__(
+        self, eot=None, vad_slow=None, dm=None, nlg=None, verbose=False, **kwargs
+    ):
         super().__init__(**kwargs)
         self.dialog_ended = False
         self.speak_first = True
@@ -121,10 +168,11 @@ class TurnTakingModule(AbstractModule):
                 vad_slow.EVENT_VAD_CHANGE, self.vad_slow_callback
             )
 
-        # DM
+        # NLG
         self.dm = dm
         self.initial_response = "Hi there, how can I help you today?"
         self.planned_utterance = "Hi there, how can I help you today?"
+        self.nlg = nlg
 
         self.eot = eot
 
@@ -171,8 +219,10 @@ class TurnTakingModule(AbstractModule):
         self.user_turn_ongoing = False
 
         context = self.get_utterance_history()
-        if self.dm is not None:
-            self.planned_utterance = self.dm.get_response(context)
+        if self.nlg is not None:
+            self.planned_utterance = self.nlg.generate_response(context).strip()
+        elif self.dm is not None:
+            self.planned_utterance = self.dm.next_question(context)
         else:
             self.planned_utterance = "Yes, now it's my turn to speak."
 
@@ -259,7 +309,7 @@ class TurnTakingModule(AbstractModule):
     def dialog_loop(self):
         if self.speak_first:
             if self.dm is not None:
-                self.planned_utterance = self.dm.get_response()
+                self.planned_utterance = self.dm.next_question()
             else:
                 self.planned_utterance = self.initial_response
             self.speak(self.planned_utterance)
@@ -313,16 +363,6 @@ class TurnTakingModule(AbstractModule):
             self.vad_slow.stop()
         super().stop(**kwargs)
 
-    def vad_slow_callback(self, module, event_name, data):
-        if data["is_speaking"]:
-            self.user_active = True
-            print("User VAD Active")
-        else:
-            self.user_active = False
-            self.user_vad_active_time = time.time()
-            print("User VAD Silent")
-        self.update_turn_state()
-
     def tts_activity(self, input_iu):
         if input_iu.dispatch:
             self.agent_turn_ongoing = True
@@ -360,200 +400,11 @@ class TurnTakingModule(AbstractModule):
 class TurnTaking_ASR(TurnTakingModule):
     """ Uses the ASR-final flag to determine EOT """
 
-    def asr(self, input_iu):
-        self.user_asr_activation()
-
-        self.user.prel_utterance = self.user.current_utterance + input_iu.text
-        if not self.detect_end_of_dialog(input_iu):
-            if input_iu.final:
-                self.user_asr_active = False
-                self.user.update("asr_final", time.time() - self.start_time)
-                self.user.current_utterance = self.user.prel_utterance
-
-                if self.eot is None:
-                    # print(C.green + "ASR EOT" + C.end)
-                    self.user_turn_ongoing = False
-                    self.finalize_user()
-                    self.update_turn_state()
-        self.update_turn_state()
-
-
-# ----------- LM-Models ---------------------------------
-class TurnTakingLM(TurnTakingModule):
-    URL_TRP = "http://localhost:5000/trp"
-    URL_Prediction = "http://localhost:5000/prediction"
-
-    """
-    - Must keep listening albeit ASR is final
-    - If turn is recognized before ASR is final the remaining incomming text must be handled correctly
-        - The asr might have guessed correctly but not yet committed
-        - There could be a filler word spoken no that relevant for understanding
-        - The speech recognized after we determine a turn must be handled efficiently
-    """
-
-    def __init__(self, trp_threshold=0.3, **kwargs):
-        super().__init__(**kwargs)
-        self.trp_threshold = trp_threshold
-
-    def lm_eot(self, text):
-        json_data = {"text": text}
-        response = requests.post(self.URL_TRP, json=json_data)
-        d = json.loads(response.content.decode())
-        return d["trp"][-1]  # only care about last token
-
-    def lm_prediction(self, text):
-        json_data = {"text": text}
-        response = requests.post(self.URL_Prediction, json=json_data)
-        d = json.loads(response.content.decode())
-        return d
-
-
-class TurnTaking_ASR_LM(TurnTakingLM):
-    """
-    Relies on  the ASR-final flag combine with an EOT estimation from an external LM-model.
-
-    If ASR is final but no EOT is recognized we omit a 'fast' backchannel.
-    """
-
-    def __init__(self, provide_fast_backchannel=True, **kwargs):
-        super().__init__(**kwargs)
-        self.provide_fast_backchannel = provide_fast_backchannel
-        if self.provide_fast_backchannel:
-            self.y, self.sr = torchaudio.load(
-                "/home/erik/projects/data/backchannels/uhuh.mp3"
-            )
-
-    def backchannel(self):
-        sd.play(self.y[0], samplerate=self.sr)
-
-    def asr(self, input_iu):
-        self.user_asr_activation()
-
-        self.user.prel_utterance = (self.user.current_utterance + input_iu.text).strip()
-
-        if not self.detect_end_of_dialog(input_iu):
-            if input_iu.final:
-                print(C.yellow + "=" * 20 + "FINAL" + "=" * 20 + C.end)
-                # Determine EOT
-                self.user.current_utterance = self.user.prel_utterance
-                context = self.get_utterance_history()
-                context.append(self.user.prel_utterance)
-                trp = self.lm_eot(context)
-
-                print(C.red + str(context) + C.end)
-                self.user_asr_active = False
-
-                if trp >= self.trp_threshold:
-                    print(C.green + f"EOT recognized: {round(trp, 3)}" + C.end)
-                    self.user.update("trp", trp)
-                    self.user_turn_ongoing = False
-                    self.finalize_user()
-                else:
-                    if self.provide_fast_backchannel:
-                        self.backchannel()
-                    print(C.blue + f"TRP: {round(trp, 3)}" + C.end)
-                    if not hasattr(self.user, "ipu"):
-                        self.user.ipu = []
-                        self.user.ipu_trp = []
-                    self.user.ipu.append(self.user.prel_utterance)
-                    self.user.ipu_trp.append(trp)
-        self.update_turn_state()
-
-
-class TurnTaking_LM_Prediction(TurnTakingLM):
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        self.wait_for_asr_final = False
-        self.last_context = []
-        self.last_context_time = 0
-
-    def asr(self, input_iu):
-        # detects 'goodbye' and ends dialog
-        if self.detect_end_of_dialog(input_iu):
-            self.update_turn_state()
-            return None
-
-        # activates the usr asr state -> we know that the asr is working on the current utterance
-        self.user_asr_activation()
-
-        if self.wait_for_asr_final:
-            # If we have already decided to take the turn we need to handle the incomming text from the ASR
-            # appropriately
-            if input_iu.final:
-                # add the incomming text to the last turn
-                if input_iu.text.strip() != self.history[-1]["current_utterance"]:
-                    self.history[-1]["text_after_eot"] = input_iu.text.strip()
-                # print(self.history[-1])
-                self.wait_for_asr_final = False
-        else:
-
-            # If we have not reached input_iu.final then everything is "normal"
-            #   - wait_for_asr_final = False
-            #   - current_utterance = ""
-            #   - prel_utterance = "ongoing text recognition"
-
-            # FINAL detected before EOT
-            #   - the asr now starts to recognize a "new" utterance
-            #   - wait_for_asr_final = False
-            #   - current_utterance = 'first part of the total turn' + self.prel_utterance
-            #   - prel_utterance = current_utterance + 'ongoing text recognition'
-
-            # EOT before final
-            #   - ASR is still recognizing an utterance we already think of as complete
-            #   - Add asr text into a new field in the user state "text_after_eot"
-            #   - wait_for_asr_final = True, now we need to skip
-            #       - while true: wait for final and store in "text_after_eot"
-
-            # If we have detected final but NOT EOT
-            # if not self.wait_for_asr_final:
-            self.user.prel_utterance = self.user.current_utterance + input_iu.text
-
-            # Determine EOT
-            context = self.get_utterance_history()
-            context.append(self.user.prel_utterance)
-
-            if (
-                not self.user_active
-                and context != self.last_context
-                and time.time() - self.last_context_time > 0.1
-            ):
-                # Too slow to use all the time
-                res = self.lm_prediction(context)
-                self.last_context = context
-                self.last_context_time = time.time()
-                p = res["p"]
-                N = res["n"]
-                n_tokens = res["n_tokens"]
-                print(C.cyan + f"{self.user.prel_utterance}: {round(p, 3)}" + C.end)
-
-                if p >= self.trp_threshold:
-                    print(C.green + f"EOT recognized: {round(p, 3)}" + C.end)
-                    # deactivate the user turn and update the current utterance
-                    self.user.current_utterance = self.user.prel_utterance
-                    self.user.update("trp_pred", p)
-                    self.user_turn_ongoing = False
-                    self.finalize_user()
-                    if not input_iu.final:
-                        self.wait_for_asr_final = True
-                else:
-                    # If ASR is final it omits all the history. In order to store this we update the current_utterance of the
-                    # user. Albeit wihout any changes to the turn-states
-                    if input_iu.final:
-                        print(C.yellow + "=" * 20 + "FINAL" + "=" * 20 + C.end)
-                        self.user.current_utterance = self.user.prel_utterance
-                        if self.wait_for_asr_final:
-                            self.wait_for_asr_final = False
-            else:
-                self.user_turn_ongoing = True
-                print(C.red + f"{self.user.prel_utterance}" + C.end)
-
-        # print(self.user)
-        self.update_turn_state()
-
 
 def test_turntaking():
     from retico.agent import Hearing, Speech, VAD
-    from retico.agent.dm import DM, DM_LM
+    from retico.agent.nlg import NLG
+    from retico.agent.dm import DM
     from retico.agent.utils import write_json
 
     import argparse
@@ -593,21 +444,23 @@ def test_turntaking():
         offset_time=0.1,
         debug=False,
     )
-    # dm = DM_LM()
+    nlg = None
+    # nlg = NLG()
     dm = DM(n_follow_ups=2)
     if args.model == "lm_prediction":
         turntaking = TurnTaking_LM_Prediction(
             trp_threshold=args.trp_threshold,
+            nlg=nlg,
             dm=dm,
             vad_slow=vad_slow,
             verbose=args.verbose,
         )
     elif args.model == "asr_lm":
         turntaking = TurnTaking_ASR_LM(
-            trp_threshold=args.trp_threshold, dm=dm, verbose=args.verbose
+            trp_threshold=args.trp_threshold, dm=dm, nlg=nlg, verbose=args.verbose
         )
     else:
-        turntaking = TurnTaking_ASR(dm=dm, verbose=args.verbose)
+        turntaking = TurnTaking_ASR(dm=dm, nlg=nlg, verbose=args.verbose)
 
     hearing.asr.subscribe(turntaking)
     hearing.vad_frames.subscribe(vad_slow)

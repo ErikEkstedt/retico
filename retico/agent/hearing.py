@@ -1,7 +1,9 @@
 import logging
 import time
+import queue
 
-from retico.core.abstract import AbstractConsumingModule
+from retico.core.abstract import AbstractConsumingModule, AbstractProducingModule
+from retico.core.audio.common import AudioIU
 from retico.core.audio.io import MicrophoneModule, AudioRecorderModule
 from retico.core.debug.general import CallbackModule
 from retico.core.text.asr import IncrementalizeASRModule
@@ -86,6 +88,47 @@ class ASRDebugModule(AbstractConsumingModule):
             )
 
 
+class AudioBufferWrapper(AbstractProducingModule):
+    """A module that produces IUs containing audio signals that are captures by
+    a microphone."""
+
+    @staticmethod
+    def name():
+        return "Microphone Module"
+
+    @staticmethod
+    def description():
+        return "A prodicing module that records audio from microphone."
+
+    @staticmethod
+    def output_iu():
+        return AudioIU
+
+    def __init__(self, chunk_size, rate=48000, sample_width=2, **kwargs):
+        """
+        Initialize the Microphone Module.
+
+        Args:
+            chunk_size (int): The number of frames that should be stored in one
+                AudioIU
+            rate (int): The frame rate of the recording
+            sample_width (int): The width of a single sample of audio in bytes.
+        """
+        super().__init__(**kwargs)
+        self.chunk_size = chunk_size
+        self.rate = rate
+        self.sample_width = sample_width
+        self.audio_buffer = queue.Queue()
+
+    def process_iu(self, input_iu):
+        if not self.audio_buffer:
+            return None
+        sample = self.audio_buffer.get()
+        output_iu = self.create_iu()
+        output_iu.set_audio(sample, self.chunk_size, self.rate, self.sample_width)
+        return output_iu
+
+
 class Hearing(object):
     """
     The Hearing component of the Spoken Dialog System.
@@ -98,19 +141,30 @@ class Hearing(object):
 
     def __init__(
         self,
-        chunk_time,
-        sample_rate,
-        bytes_per_sample,
+        chunk_time=None,
+        chunk_size=None,
+        sample_rate=16000,
+        bytes_per_sample=2,
         language="en-US",
         nchunks=20,
         use_asr=True,
         use_iasr=False,
         record=False,
         debug=False,
+        web_server=False,
     ):
         self.sample_rate = sample_rate
-        self.chunk_time = chunk_time
-        self.chunk_size = int(chunk_time * sample_rate)
+        assert (
+            chunk_time is not None or chunk_size is not None
+        ), "please provide either chunk_time or chunk_size"
+
+        if chunk_size is not None:
+            self.chunk_size = int(chunk_size)
+            self.chunk_time = chunk_size / sample_rate
+        else:
+            self.chunk_time = chunk_time
+            self.chunk_size = int(chunk_time * sample_rate)
+
         self.bytes_per_sample = bytes_per_sample
         self.use_asr = use_asr
         self.use_iasr = use_iasr
@@ -121,13 +175,23 @@ class Hearing(object):
             self.use_asr = True
 
         # Components that are always used
-        self.in_mic = MicrophoneModule(
-            chunk_size=self.chunk_size,
-            rate=self.sample_rate,
-            sample_width=self.bytes_per_sample,
-        )
+        if web_server:
+            self.in_mic = AudioBufferWrapper(
+                chunk_size=self.chunk_size,
+                rate=self.sample_rate,
+                sample_width=self.bytes_per_sample,
+            )
+        else:
+            self.in_mic = MicrophoneModule(
+                chunk_size=self.chunk_size,
+                rate=self.sample_rate,
+                sample_width=self.bytes_per_sample,
+            )
         self.vad_frames = VADFrames(
-            chunk_time=chunk_time, sample_rate=sample_rate, mode=3, debug=debug
+            chunk_time=self.chunk_time,
+            sample_rate=self.sample_rate,
+            mode=3,
+            debug=debug,
         )
         self.in_mic.subscribe(self.vad_frames)
 

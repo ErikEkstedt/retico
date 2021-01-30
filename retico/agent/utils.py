@@ -1,4 +1,5 @@
 import json
+import re
 
 
 class Color:
@@ -19,3 +20,10 @@ class Color:
 def write_json(data, filename):
     with open(filename, "w", encoding="utf-8") as jsonfile:
         json.dump(data, jsonfile, ensure_ascii=False)
+
+
+def clean_whitespace(s):
+    s = re.sub("^\s", "", s)
+    s = re.sub("$\s", "", s)
+    s = re.sub("\s\s+", " ", s)
+    return s

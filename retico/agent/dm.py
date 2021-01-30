@@ -6,7 +6,9 @@ QUESTIONS = [
         "question": "Hello there, how are you doing today?",
         "follow_ups": [
             "That's great, did you sleep well?",
-            "I'm sorry to hear that, what's wrong?",
+            "I'm happy to hear that, go on",
+            "That's too bad, what is wrong?",
+            # "I'm sorry to hear that, what is wrong?",
             "Well tomorrow is another day. Do you have any plans?",
             "great, tell me more",
         ],
@@ -48,6 +50,7 @@ QUESTIONS = [
     },
 ]
 
+URL_SAMPLE = "http://localhost:5000/sample"
 URL_RANK = "http://localhost:5000/response_ranking"
 
 
@@ -73,49 +76,65 @@ class DM:
         d = json.loads(response.content.decode())
         return d["response"]
 
-    def next_question(self, context=None):
+    def get_response(self, context=None):
         if context is None:  # we always start with the first question
             self.current_question = self.questions.pop(0)
             self.current_follow_ups = self.current_question["follow_ups"]
             self.main_question_idx = 0
             self.n_current_follow_ups = 0
-            return self.current_question["question"]
+            response = self.current_question["question"]
+            end = False
         else:
             # If we have asked the minimum amount of follow ups we select a new main question
-            if self.n_current_follow_ups >= self.n_follow_ups:
-                print("New Main Question")
-                main_questions = [q["question"] for q in self.questions]
-                q_to_ind = {q: i for i, q in enumerate(main_questions)}
-
-                response = self.select_response(context, main_questions)
-                self.current_question = self.questions.pop(q_to_ind[response])
-                self.current_follow_ups = self.current_question["follow_ups"]
-                self.n_current_follow_ups = 0
-                print("Follow ups: ", self.current_follow_ups)
-                return response
+            if len(self.questions) == 0:
+                response = "Dialog Done"
+                end = True
             else:
-                # follow up
-                print("New Follow up Question")
-                q_to_ind = {q: i for i, q in enumerate(self.current_follow_ups)}
+                if self.n_current_follow_ups >= self.n_follow_ups:
+                    # print("New Main Question")
+                    main_questions = [q["question"] for q in self.questions]
+                    q_to_ind = {q: i for i, q in enumerate(main_questions)}
 
-                response = self.select_response(context, self.current_follow_ups)
-                self.current_follow_ups.pop(q_to_ind[response])  # remove the follow up
-                self.n_current_follow_ups += 1
-                print("Follow ups: ", self.current_follow_ups)
-                return response
+                    response = self.select_response(context, main_questions)
+                    self.current_question = self.questions.pop(q_to_ind[response])
+                    self.current_follow_ups = self.current_question["follow_ups"]
+                    self.n_current_follow_ups = 0
+                    # print("Follow ups: ", self.current_follow_ups)
+                    end = False
+                else:
+                    # follow up
+                    # print("New Follow up Question")
+                    q_to_ind = {q: i for i, q in enumerate(self.current_follow_ups)}
+
+                    response = self.select_response(context, self.current_follow_ups)
+                    self.current_follow_ups.pop(
+                        q_to_ind[response]
+                    )  # remove the follow up
+                    self.n_current_follow_ups += 1
+                    # print("Follow ups: ", self.current_follow_ups)
+                    end = False
+        return response, end
+
+
+class DM_LM(object):
+    def get_response(self, turns):
+        json_data = {"text": turns}
+        response = requests.post(URL_SAMPLE, json=json_data)
+        d = json.loads(response.content.decode())
+        return d["response"]
 
 
 if __name__ == "__main__":
 
     dm = DM()
 
-    dm.next_question()
+    dm.get_response()
 
-    dm.next_question("hello")
-    dm.next_question("hello")
-    dm.next_question("hello")
-    dm.next_question("hello")
-    dm.next_question("hello")
+    dm.get_response("hello")
+    dm.get_response("hello")
+    dm.get_response("hello")
+    dm.get_response("hello")
+    dm.get_response("hello")
 
     q = QUESTIONS.copy()
     print(len(q))
