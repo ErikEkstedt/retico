@@ -1,367 +1,272 @@
-import json
-import random
-import requests
-import threading
-import time
+from os.path import join, exists
+from os import makedirs
+import subprocess
+from datetime import datetime
 
-from retico.agent.utils import clean_whitespace, Color as C
+from retico.agent import Hearing, Speech
+from retico.agent.CNS import CNS
+from retico.agent.dm.dm import DM, DM_LM, DMExperiment
+from retico.agent.policies import (
+    FC_Baseline,
+    FC_EOT,
+    FC_Predict,
+    CNS_Continuous,
+)
+from retico.agent.vad import VADModule
 
-URL_TRP = "http://localhost:5000/trp"
+# from retico.agent.utils import create_session_dir, write_json
+from retico.agent.utils import write_json
 
 
-class FrontalCortexBase:
-    LOOP_TIME = 0.05  # 50ms  update frequency
+"""
+Experiment
 
-    # turn states
-    BOTH_ACTIVE = "double_talk"
-    BOTH_INACTIVE = "silence"
-    ONLY_USER = "only_user"
-    ONLY_AGENT = "only_agent"
+
+* 3 different dialogs with 3 different policies
+* 1 Folder for each user with subfolders for each policy
+* The researcher needs to start each task/policy and provide a root dir
+
+root/
+    ├── baseline
+    ├── eot
+    └── prediction
+        ├── hearing/
+        ├── speech/
+        ├── tts/
+        ├── annotation.json
+        ├── dialog.json
+        ├── dialog.wav
+        └── hparams.json
+"""
+
+
+class Agent:
+    POLICIES = ["baseline", "eot", "prediction"]
 
     def __init__(
         self,
-        central_nervous_system,
-        dm=None,
-        speak_first=True,
-        fallback_duration=4,
+        policy="baseline",
+        dm_type="experiment",
+        task="exercise",
+        chunk_time=0.01,
+        sample_rate=48000,
+        bytes_per_sample=2,
+        speech_chunk_time=0.1,
+        speech_sample_rate=48000,
+        fallback_duration=2,
+        backchannel_prob=0.5,
+        trp=0.1,
+        record=True,
         verbose=False,
+        bypass=False,
+        root="/home/erik/.cache/agent",
     ):
-        self.cns = central_nervous_system
-        self.speak_first = speak_first
-        self.dm = dm
-        self.verbose = verbose
+        policy = policy.lower()
+        assert (
+            policy in self.POLICIES
+        ), f"Policy ({policy}) is not implemented. Please choose {self.POLICIES}"
 
-        self.dialog_ended = False
-        self.suspend = False
-
+        self.policy = policy
+        self.dm_type = dm_type
+        self.task = task
+        self.chunk_time = chunk_time
+        self.sample_rate = sample_rate
+        self.bytes_per_sample = bytes_per_sample
+        self.speech_chunk_time = speech_chunk_time
+        self.speech_sample_rate = speech_sample_rate
         self.fallback_duration = fallback_duration
-
-    @property
-    def both_inactive(self):
-        raise NotImplementedError("")
-
-    @property
-    def both_active(self):
-        raise NotImplementedError("")
-
-    @property
-    def only_user_active(self):
-        raise NotImplementedError("")
-
-    @property
-    def only_agent_active(self):
-        raise NotImplementedError("")
-
-    def check_utterance_dialog_end(self, text=None):
-        if "goodbye" in text or "bye" in text:
-            return True
-        return False
-
-    def is_interrupted(self):
-        if self.cns.agent.completion < 0.8:
-            return True
-        return False
-
-    def fallback_inactivity(self, response=None):
-        now = time.time()
-        agent_silence = now - self.cns.agent_last_speech_end_time
-        user_silence = now - self.cns.user_last_asr_end_time
-        latest_activity_time = min(agent_silence, user_silence)
-        if latest_activity_time >= self.fallback_duration:
-            print("FALLBACK")
-            if response is None:
-                context = self.cns.memory.get_dialog_text()
-                self.cns.agent.start_time = time.time()
-                (
-                    self.cns.agent.planned_utterance,
-                    self.dialog_ended,
-                ) = self.dm.get_response(context)
-                self.cns.start_speech(self.cns.agent.planned_utterance)
-            else:
-                self.cns.start_speech(response)
-            self.cns.finalize_user()
-
-    def dialog_loop(self):
-        raise NotImplementedError("dialog loop not implemented")
-
-    def start_loop(self):
-        """Prepares the dialogue_loop and the DialogueState of the agent and the
-        interlocutor by resetting the timers.
-        This method starts the dialogue_loop."""
-        t = threading.Thread(target=self.dialog_loop)
-        now = time.time()
-        self.cns.user.asr_end_time = now
-        self.cns.memory.start_time = now
-        t.start()
-
-
-class SimpleFC(FrontalCortexBase):
-    """
-    Starts the dialog by speaking its `DUMMY_RESPONSE`. Listens while the user asr is active and only does a fallback
-    action which executes the dummy response if the conversation has been inactive for at leat `fallback_duration`
-    seconds.
-
-    Never updates the memory...
-    """
-
-    INIT_RESPONSE = "Lets start this dialog!"
-    FALLBACK_RESPONSE = "This is the inactivity fallback!"
-
-    @property
-    def both_inactive(self):
-        return not self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def both_active(self):
-        return self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    @property
-    def only_user_active(self):
-        return self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def only_agent_active(self):
-        return not self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    def dialog_loop(self):
-        """
-        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
-        state.
-
-        """
-        if self.speak_first:
-            if self.dm is not None:
-                self.cns.agent.planned_utterance = self.dm.next_question()
-            else:
-                self.cns.agent.planned_utterance = self.INIT_RESPONSE
-            self.cns.start_speech(self.cns.agent.planned_utterance)
-
-        last_state = None
-        while not self.dialog_ended:
-            time.sleep(self.LOOP_TIME)
-
-            if self.suspend:
-                continue
-
-            if self.both_inactive:
-                if self.verbose and last_state != "both_inactive":
-                    print("BOTH INACTIVE")
-                    last_state = "both_inactive"
-                self.fallback_inactivity(self.FALLBACK_RESPONSE)
-            elif self.both_active:
-                if self.verbose and last_state != "double_talk":
-                    print("DOUBLE TALK")
-                    last_state = "double_talk"
-            elif self.only_user_active:
-                if self.verbose and last_state != "only_user":
-                    print("USER")
-                    last_state = "only_user"
-            else:
-                if self.verbose and last_state != "only_agent":
-                    print("AGENT")
-                    last_state = "only_agent"
-
-
-class FC_Baseline(FrontalCortexBase):
-    def __init__(self, dm, **kwargs):
-        super().__init__(**kwargs)
-        self.dm = dm
-        self.cns.user_turn_active = self.cns.user_asr_active
-        self.cns.user_last_turn_end_time = self.cns.user_last_asr_end_time
-
-    @property
-    def both_inactive(self):
-        return not self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def both_active(self):
-        return self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    @property
-    def only_user_active(self):
-        return self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def only_agent_active(self):
-        return not self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    def respond_or_listen(self):
-        end = self.check_utterance_dialog_end(self.cns.user.utterance)
-        self.cns.finalize_user()
-        if end:
-            self.dialog_ended = True
-        else:
-            context = self.cns.memory.get_dialog_text()
-            (
-                self.cns.agent.planned_utterance,
-                self.dialog_ended,
-            ) = self.dm.get_response(context)
-            self.cns.start_speech(self.cns.agent.planned_utterance)
-
-    def dialog_loop(self):
-        """
-        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
-        state.
-
-        """
-        if self.speak_first:
-            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response()
-            self.cns.start_speech(self.cns.agent.planned_utterance)
-
-        last_state = "both_inactive"
-        while not self.dialog_ended:
-            time.sleep(self.LOOP_TIME)
-
-            if self.both_inactive:
-                if self.verbose and last_state != self.BOTH_INACTIVE:
-                    print(C.red + "BOTH INACTIVE" + C.end)
-
-                if last_state == self.ONLY_USER:
-                    self.respond_or_listen()
-
-                elif last_state == self.ONLY_AGENT:
-                    self.cns.finalize_agent()
-                else:
-                    self.fallback_inactivity()
-                last_state = self.BOTH_INACTIVE
-
-            elif self.both_active:
-                if self.verbose and last_state != self.BOTH_ACTIVE:
-                    print(C.red + "DOUBLE TALK" + C.end)
-
-                if last_state == self.ONLY_AGENT:
-                    if self.is_interrupted():
-                        self.cns.stop_speech()
-                elif last_state == self.ONLY_USER:
-                    finalize = True
-                    if self.cns.agent.completion < 0.2:
-                        finalize = False
-                    self.cns.stop_speech(finalize)
-
-                last_state = self.BOTH_ACTIVE
-
-            elif self.only_user_active:
-                if self.verbose and last_state != self.ONLY_USER:
-                    print(C.red + "USER" + C.end)
-                last_state = self.ONLY_USER
-            else:
-                if self.verbose and last_state != self.ONLY_AGENT:
-                    print(C.red + "AGENT" + C.end)
-                last_state = self.ONLY_AGENT
-        print("======== DIALOG DONE ========")
-
-
-class FC_EOT(FrontalCortexBase):
-    def __init__(self, dm, trp_threshold=0.1, backchannel_prob=0.4, **kwargs):
-        super().__init__(**kwargs)
-        self.dm = dm
-        self.trp_threshold = trp_threshold
         self.backchannel_prob = backchannel_prob
+        self.trp = trp
+        self.record = record
+        self.verbose = verbose
+        self.bypass = bypass
+        self.root = root
 
-    @property
-    def both_inactive(self):
-        return not self.cns.user_asr_active and not self.cns.agent_speech_ongoing
+        # ---------------------------------------------
+        makedirs(self.root, exist_ok=True)
+        self.session_dir = join(self.root, policy)
+        makedirs(self.session_dir)
+        # self.session_dir = create_session_dir(root)
+        print(self.session_dir)
+        self.hearing = Hearing(
+            chunk_time=chunk_time,
+            sample_rate=sample_rate,
+            bytes_per_sample=bytes_per_sample,
+            use_asr=True,
+            record=record,
+            cache_dir=self.session_dir,
+            bypass=bypass,
+            debug=False,
+        )
+        self.speech = Speech(
+            chunk_time=speech_chunk_time,
+            sample_rate=speech_sample_rate,
+            bytes_per_sample=bytes_per_sample,
+            tts_client="amazon",
+            output_word_times=True,
+            bypass=bypass,
+            record=record,
+            cache_dir=self.session_dir,
+            debug=False,
+        )
 
-    @property
-    def both_active(self):
-        return self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    @property
-    def only_user_active(self):
-        return self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def only_agent_active(self):
-        return not self.cns.user_turn_active and self.cns.agent_speech_ongoing
-
-    def lm_eot(self, text):
-        json_data = {"text": text}
-        response = requests.post(URL_TRP, json=json_data)
-        d = json.loads(response.content.decode())
-        return d["trp"][-1]  # only care about last token
-
-    def respond_or_listen(self):
-        context = self.cns.memory.get_dialog_text()
-        current_utt = clean_whitespace(self.cns.user.utterance)
-        context.append(current_utt)
-
-        if self.check_utterance_dialog_end(current_utt):
-            self.dialog_ended = True
+        if dm_type.startswith("experiment"):
+            print("DM: EXPERIMENT")
+            print("TASK: ", task)
+            self.dm = DMExperiment(task=task)
+        elif dm_type.startswith("gen"):
+            print("DM: GENERATION")
+            self.dm = DM_LM()
         else:
-            for i, utt in enumerate(context):
-                if i % 2 == 0:
-                    print(C.blue + utt, C.end)
-                else:
-                    print(C.yellow + utt, C.end)
+            print("DM: QUESTIONS")
+            self.dm = DM()
+        self.vad = VADModule(
+            chunk_time=chunk_time,
+            onset_time=0.2,
+            turn_offset=0.75,
+            ipu_offset=0.3,
+            fast_offset=0.1,
+            prob_thresh=0.9,
+        )
 
-            trp = self.lm_eot(context)
+        if policy == "prediction":
+            print("Policy: PREDICTION")
+            self.cns = CNS_Continuous(verbose=verbose)
+            self.fcortex = FC_Predict(
+                dm=self.dm,
+                central_nervous_system=self.cns,
+                fallback_duration=fallback_duration,
+                trp_threshold=trp,
+                verbose=verbose,
+            )
+        else:
+            self.cns = CNS(verbose=verbose)
 
-            if trp >= self.trp_threshold:
-                print(C.green + f"EOT recognized: {round(trp, 3)}" + C.end)
-                self.cns.finalize_user()
-                self.cns.user_turn_active = False
-                self.cns.agent.start_time = time.time()
-
-                (
-                    self.cns.agent.planned_utterance,
-                    self.dialog_ended,
-                ) = self.dm.get_response(context)
-                self.cns.start_speech(self.cns.agent.planned_utterance)
+            if policy == "baseline":
+                print("Policy: BASELINE")
+                self.fcortex = FC_Baseline(
+                    dm=self.dm,
+                    central_nervous_system=self.cns,
+                    fallback_duration=fallback_duration,
+                    verbose=verbose,
+                )
             else:
-                print(C.red + f"listen: {1-round(trp, 3)}" + C.end)
-                if random.random() <= self.backchannel_prob:
-                    self.cns.backchannel("Go on.")
+                print("Policy: EOT")
+                self.fcortex = FC_EOT(
+                    dm=self.dm,
+                    central_nervous_system=self.cns,
+                    trp_threshold=trp,
+                    fallback_duration=fallback_duration,
+                    backchannel_prob=backchannel_prob,
+                    verbose=verbose,
+                )
 
-    def dialog_loop(self):
-        """
-        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
-        state.
+        self.cns.subscribe(self.speech.tts)
+        self.hearing.asr.subscribe(self.cns)
+        self.hearing.vad_frames.subscribe(self.vad)
+        self.speech.audio_dispatcher.subscribe(self.cns)
+        self.speech.tts.subscribe(self.cns)
 
-        """
-        if self.speak_first:
-            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response()
-            self.cns.start_speech(self.cns.agent.planned_utterance)
+        self.vad.event_subscribe(self.vad.EVENT_VAD_FAST_CHANGE, self.cns.vad_callback)
+        self.vad.event_subscribe(self.vad.EVENT_VAD_IPU_CHANGE, self.cns.vad_callback)
+        self.vad.event_subscribe(self.vad.EVENT_VAD_TURN_CHANGE, self.cns.vad_callback)
 
-        last_state = "both_inactive"
-        while not self.dialog_ended:
-            time.sleep(self.LOOP_TIME)
+        self.save_hyperparameters()
 
-            if self.both_inactive:
-                if self.verbose and last_state != self.BOTH_INACTIVE:
-                    print(C.red + "BOTH INACTIVE" + C.end)
+    def save_hyperparameters(self):
+        hparams = {
+            "policy": self.policy,
+            "dm_type": self.dm_type,
+            "task": self.task,
+            "chunk_time": self.chunk_time,
+            "sample_rate": self.sample_rate,
+            "bytes_per_sample": self.bytes_per_sample,
+            "speech_chunk_time": self.speech_chunk_time,
+            "speech_sample_rate": self.speech_sample_rate,
+            "fallback_duration": self.fallback_duration,
+            "backchannel_prob": self.backchannel_prob,
+            "trp": self.trp,
+            "verbose": self.verbose,
+            "bypass": self.bypass,
+            "date": datetime.now().strftime("%Y-%m-%d_%H:%M"),
+        }
 
-                if last_state == self.ONLY_USER:
-                    end = self.respond_or_listen()
-                    if end:
-                        print("END EVERYTHING")
-                        self.dialog_ended = True
-                        break
-                elif last_state == self.ONLY_AGENT:
-                    self.cns.finalize_agent()
-                else:
-                    self.fallback_inactivity()
-                last_state = self.BOTH_INACTIVE
+        savepath = join(self.session_dir, "hparams.json")
+        write_json(hparams, savepath)
+        print("Saved hparams -> ", savepath)
 
-            elif self.both_active:
-                if self.verbose and last_state != self.BOTH_ACTIVE:
-                    print(C.red + "DOUBLE TALK" + C.end)
+    def join_audio(self):
+        user_wav = join(self.session_dir, "hearing", "user_audio.wav")
+        agent_wav = join(self.session_dir, "speech", "agent_audio.wav")
 
-                if last_state == self.ONLY_AGENT:
-                    if self.is_interrupted():
-                        self.cns.stop_speech()
-                elif last_state == self.ONLY_USER:
-                    finalize = True
-                    if self.cns.agent.completion < 0.2:
-                        finalize = False
-                    self.cns.stop_speech(finalize)
+        assert exists(agent_wav), f"did not find agent recording: {agent_wav}"
+        assert exists(user_wav), f"did not find user recording: {user_wav}"
 
-                last_state = self.BOTH_ACTIVE
-            elif self.only_user_active:
-                if self.verbose and last_state != self.ONLY_USER:
-                    print(C.red + "USER" + C.end)
-                last_state = self.ONLY_USER
-            else:
-                if self.verbose and last_state != self.ONLY_AGENT:
-                    print(C.red + "AGENT" + C.end)
-                last_state = self.ONLY_AGENT
-        print("======== DIALOG DONE ========")
+        comb_wav = join(self.session_dir, "dialog.wav")
+
+        cmd = ["sox", "-M", agent_wav, user_wav, comb_wav]
+        subprocess.call(cmd)
+        print("Joined audio -> ", comb_wav)
+
+    def start(self):
+        self.cns.run()
+        self.vad.run()
+        self.hearing.run()
+        self.speech.run()
+        self.fcortex.start_loop()
+
+        input("DIALOG\n")
+
+        self.hearing.stop()
+        self.speech.stop()
+        # self.speech.tts.shutdown()
+        self.vad.stop()
+        self.cns.stop()
+        self.cns.memory.save(join(self.session_dir, "dialog.json"))
+        self.join_audio()
+        self.hearing.asr.active = False
+        self.fcortex.dialog_ended = True
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="DialogState")
+    parser.add_argument("--policy", type=str, default="baseline")
+    parser.add_argument("--dm_type", type=str, default="experiment")
+    parser.add_argument("--task", type=str, default="exercise")
+    parser.add_argument("--root", type=str, default="/tmp/Agent")
+    parser.add_argument("--chunk_time", type=float, default=0.01)
+    parser.add_argument("--sample_rate", type=int, default=48000)
+    parser.add_argument("--speech_chunk_time", type=float, default=0.1)
+    parser.add_argument("--speech_sample_rate", type=int, default=48000)
+    parser.add_argument("--bytes_per_sample", type=int, default=2)
+    parser.add_argument("--trp", type=float, default=0.1)
+    parser.add_argument("--fallback_duration", type=float, default=3)
+    parser.add_argument("--backchannel_prob", type=float, default=0.5)
+    parser.add_argument("--bypass", action="store_true")
+    parser.add_argument("--verbose", action="store_true")
+    args = parser.parse_args()
+
+    # args.root = "/home/erik/Documents/Agent"
+    # args.policy = 'eot'
+    # args.task = 'food'
+
+    agent = Agent(
+        policy=args.policy,
+        dm_type=args.dm_type,
+        task=args.task,
+        chunk_time=args.chunk_time,
+        sample_rate=args.sample_rate,
+        bytes_per_sample=args.bytes_per_sample,
+        speech_chunk_time=args.speech_chunk_time,
+        speech_sample_rate=args.speech_sample_rate,
+        fallback_duration=args.fallback_duration,
+        backchannel_prob=args.backchannel_prob,
+        trp=args.trp,
+        verbose=args.verbose,
+        bypass=args.bypass,
+        root=args.root,
+    )
+
+    agent.start()

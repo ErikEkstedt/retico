@@ -12,6 +12,9 @@ import webrtcvad
 
 
 class VADFrames(AbstractModule):
+    CHUNK_TIMES = [0.01, 0.02, 0.03]
+    SAMPLE_RATES = [8000, 16000, 32000, 48000]
+
     @staticmethod
     def name():
         return "VAD Module"
@@ -36,15 +39,16 @@ class VADFrames(AbstractModule):
         self.last_vad_state = None
         self.debug = debug
 
+        assert (
+            chunk_time in self.CHUNK_TIMES
+        ), f"webrtc.Vad must use frames of {self.CHUNK_TIMES} ms but got {int(chunk_time*1000)}"
+        assert (
+            sample_rate in self.SAMPLE_RATES
+        ), f"webrtc.Vad must use sample rate of {self.SAMPLE_RATES} but got {sample_rate}"
+
         if self.debug:
             self._debugger = CallbackModule(callback=self._debug)
             self.subscribe(self._debugger)
-
-        assert chunk_time in [
-            0.01,
-            0.02,
-            0.03,
-        ], f"webrtc.Vad must use frames of 10, 20 or 30 ms but got {int(chunk_time*1000)}"
 
     def run(self, **kwargs):
         if self.debug:

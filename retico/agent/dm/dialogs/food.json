@@ -1,0 +1,18 @@
+{
+    "introduction": ["Hi there, in this session I am going to ask you questions about food. Are you ready to start?"],
+    "long": [
+        "Please tell me about the kind of food you usually eat during a normal week.",
+        "Could you talk about your favorite meal and why you like it?",
+        "How often do you eat at restaurants?",
+        "How do you usually plan out your weekly meals?",
+        "What kind of food do you think is healthiest for you?"
+    ],
+    "short": [
+        "Which do you like better, pasta or rice?",
+        "Which do you like better, pizza or hamburgers?",
+        "Which do you like better, ice cream or candy?",
+        "How many times a week do you eat candy?",
+        "How many times a week do you eat pizza?",
+        "How many times a week do you eat pasta?"
+    ]
+}

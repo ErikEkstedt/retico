@@ -1,6 +1,9 @@
 import logging
 import time
 import queue
+import pyaudio
+from os import makedirs
+from os.path import join
 
 from retico.core.abstract import AbstractConsumingModule, AbstractProducingModule
 from retico.core.audio.common import AudioIU
@@ -16,35 +19,7 @@ from retico.agent.utils import Color as C
 
 from os import environ
 
-"""
-The Hearing component of the Spoken Dialog System.
-
-Takes a `GeneratedTextIU` and, using tts from google/amazon or similar, produces output audio.
-
-Metrics
--------
-
-* We want to how long the silences are
-    - [x] Use a VAD to incrementally tell the silence duration
-    - [ ] Use sensible interval i.e. 0.05, 0.1, 0.15, 0.2, etc (seconds)
-
-These metrics may then be used by EOTModules & BCModules to tell whether the incomming speech is complete or if some
-reaction is plausable.
-
-Thoughts
---------
-* The IncrementalizeASRModule is pretty slow (using python list iteration to check if the new word is part of the given words)
-    - When debuggin we see many more prints from the ASR module than that of the IASR module. It lags significantly
-      behind...
-    - When do we need the IASR module?
-
-hearing = Hearing()
-hearing.in_mic # microphone
-hearing.vad # vad-component
-hearing.asr # asr-component
-hearing.iasr # incremental-asr-component
-"""
-
+CHANNELS = 1
 
 # logging.basicConfig(filename="Hearing.log", level=logging.INFO)
 
@@ -52,6 +27,110 @@ hearing.iasr # incremental-asr-component
 environ[
     "GOOGLE_APPLICATION_CREDENTIALS"
 ] = "/home/erik/projects/data/GOOGLE_SPEECH_CREDENTIALS.json"
+
+
+class MicrophoneOutputBypass(AbstractProducingModule):
+    """A module that produces IUs containing audio signals that are captures by
+    a microphone."""
+
+    DEVICE = "pulse_sink_2"
+
+    @staticmethod
+    def name():
+        return "Microphone Module"
+
+    @staticmethod
+    def description():
+        return "A prodicing module that records audio from microphone."
+
+    @staticmethod
+    def output_iu():
+        return AudioIU
+
+    def callback(self, in_data, frame_count, time_info, status):
+        """The callback function that gets called by pyaudio.
+
+        Args:
+            in_data (bytes[]): The raw audio that is coming in from the
+                microphone
+            frame_count (int): The number of frames that are stored in in_data
+        """
+        self.audio_buffer.put(in_data)
+        return (in_data, pyaudio.paContinue)
+
+    def get_device_index(self):
+        bypass_index = None
+        for i in range(self._p.get_device_count()):
+            info = self._p.get_device_info_by_index(i)
+            if info["name"] == self.DEVICE:
+                bypass_index = i
+                break
+        return bypass_index
+
+    def __init__(self, chunk_size, rate=48000, sample_width=2, **kwargs):
+        """
+        Initialize the Microphone Module.
+
+        Args:
+            chunk_size (int): The number of frames that should be stored in one
+                AudioIU
+            rate (int): The frame rate of the recording
+            sample_width (int): The width of a single sample of audio in bytes.
+        """
+        super().__init__(**kwargs)
+        self.chunk_size = chunk_size
+        self.rate = rate
+        self.sample_width = sample_width
+
+        self._p = pyaudio.PyAudio()
+
+        self.device_index = self.get_device_index()
+        assert (
+            self.device_index is not None
+        ), "Did not find bypass device -> Check JACK/Carla/Catia settings"
+
+        self.audio_buffer = queue.Queue()
+        self.stream = None
+
+    def process_iu(self, input_iu):
+        if not self.audio_buffer:
+            return None
+        sample = self.audio_buffer.get()
+        output_iu = self.create_iu()
+        output_iu.set_audio(sample, self.chunk_size, self.rate, self.sample_width)
+        return output_iu
+
+    def setup(self):
+        """Set up the microphone for recordzing."""
+        p = self._p
+        self.stream = p.open(
+            format=p.get_format_from_width(self.sample_width),
+            channels=CHANNELS,
+            rate=self.rate,
+            input=True,
+            output=False,
+            stream_callback=self.callback,
+            frames_per_buffer=self.chunk_size,
+            input_device_index=self.device_index,
+            start=False,
+        )
+        print("BYPASS SETUP")
+        print("format", p.get_format_from_width(self.sample_width))
+        print("channels", CHANNELS)
+        print("rate", self.rate)
+        print("frames_per_buffer", self.chunk_size)
+        print("input_device_index", self.device_index)
+
+    def prepare_run(self):
+        if self.stream:
+            self.stream.start_stream()
+
+    def shutdown(self):
+        """Close the audio stream."""
+        self.stream.stop_stream()
+        self.stream.close()
+        self.stream = None
+        self.audio_buffer = queue.Queue()
 
 
 class ASRDebugModule(AbstractConsumingModule):
@@ -88,47 +167,6 @@ class ASRDebugModule(AbstractConsumingModule):
             )
 
 
-class AudioBufferWrapper(AbstractProducingModule):
-    """A module that produces IUs containing audio signals that are captures by
-    a microphone."""
-
-    @staticmethod
-    def name():
-        return "Microphone Module"
-
-    @staticmethod
-    def description():
-        return "A prodicing module that records audio from microphone."
-
-    @staticmethod
-    def output_iu():
-        return AudioIU
-
-    def __init__(self, chunk_size, rate=48000, sample_width=2, **kwargs):
-        """
-        Initialize the Microphone Module.
-
-        Args:
-            chunk_size (int): The number of frames that should be stored in one
-                AudioIU
-            rate (int): The frame rate of the recording
-            sample_width (int): The width of a single sample of audio in bytes.
-        """
-        super().__init__(**kwargs)
-        self.chunk_size = chunk_size
-        self.rate = rate
-        self.sample_width = sample_width
-        self.audio_buffer = queue.Queue()
-
-    def process_iu(self, input_iu):
-        if not self.audio_buffer:
-            return None
-        sample = self.audio_buffer.get()
-        output_iu = self.create_iu()
-        output_iu.set_audio(sample, self.chunk_size, self.rate, self.sample_width)
-        return output_iu
-
-
 class Hearing(object):
     """
     The Hearing component of the Spoken Dialog System.
@@ -138,6 +176,8 @@ class Hearing(object):
         - ASRModule
         - IncrementalizeASRModule
     """
+
+    CACHE_DIR = "/tmp"
 
     def __init__(
         self,
@@ -151,7 +191,8 @@ class Hearing(object):
         use_iasr=False,
         record=False,
         debug=False,
-        web_server=False,
+        bypass=False,
+        cache_dir="/tmp",
     ):
         self.sample_rate = sample_rate
         assert (
@@ -171,12 +212,14 @@ class Hearing(object):
         self.record = record
         self.debug = debug
 
+        self.cache_dir = cache_dir
+
         if self.use_iasr:
             self.use_asr = True
 
         # Components that are always used
-        if web_server:
-            self.in_mic = AudioBufferWrapper(
+        if bypass:
+            self.in_mic = MicrophoneOutputBypass(
                 chunk_size=self.chunk_size,
                 rate=self.sample_rate,
                 sample_width=self.bytes_per_sample,
@@ -211,19 +254,14 @@ class Hearing(object):
             self.asr.subscribe(self.iasr)
 
         if self.record:
-            wav_filename = "test.wav"
+            self.cache_dir = join(cache_dir, "hearing")
+            makedirs(self.cache_dir, exist_ok=True)
+            print("Hearing: ", self.cache_dir)
+            wav_filename = join(self.cache_dir, "user_audio.wav")
             self.audio_record = AudioRecorderModule(
                 wav_filename, rate=sample_rate, sample_width=bytes_per_sample
             )
             self.in_mic.subscribe(self.audio_record)
-
-            if self.use_asr:
-                txt_filename = "test.txt"
-                self.text_record = TextRecorderModule(txt_filename, separator="\t")
-                self.asr.subscribe(self.text_record)
-                txt_filename = "test_inc.txt"
-                self.inc_text_record = TextRecorderModule(txt_filename, separator="\t")
-                self.iasr.subscribe(self.inc_text_record)
 
         if self.debug:
             self.asr_debug = ASRDebugModule()
@@ -249,84 +287,81 @@ class Hearing(object):
         s += "\n" + "=" * 40
         return s
 
-    def setup(self):
-        self.in_mic.setup()
+    def setup(self, **kwargs):
+        self.in_mic.setup(**kwargs)
         if self.use_asr:
-            self.asr.setup()
-            self.iasr.setup()
+            self.asr.setup(**kwargs)
+        if self.use_iasr:
+            self.iasr.setup(**kwargs)
         if self.record:
-            self.audio_record.setup()
-            if self.use_asr:
-                self.text_record.setup()
-                self.inc_text_record.setup()
+            self.audio_record.setup(**kwargs)
         logging.info(f"{self.name}: Setup")
 
-    def run_components(self, run_setup=True):
-        self.in_mic.run(run_setup=run_setup)
-        self.vad_frames.run(run_setup=run_setup)
+    def run(self, **kwargs):
+        self.in_mic.run(**kwargs)
+        self.vad_frames.run(**kwargs)
 
         if self.use_asr:
-            self.asr.run(run_setup=run_setup)
+            self.asr.run(**kwargs)
 
         if self.use_iasr:
-            self.iasr.run(run_setup=run_setup)
+            self.iasr.run(**kwargs)
 
         if self.record:
-            self.audio_record.run(run_setup=run_setup)
-
-            if self.use_asr:
-                self.text_record.run(run_setup=run_setup)
-
-            if self.use_iasr:
-                self.inc_text_record.run(run_setup=run_setup)
+            self.audio_record.run(**kwargs)
 
         if self.debug:
             if self.use_asr:
-                self.asr_debug.run(run_setup=run_setup)
+                self.asr_debug.run(**kwargs)
                 # self.iasr_debug.run(run_setup=run_setup)
-        logging.info(
-            f"{self.name}: run_components (run_setup={run_setup}) @ {time.time()}"
-        )
+        logging.info(f"{self.name}: run @ {time.time()}")
 
-    def stop_components(self):
-        self.in_mic.stop()
-        self.vad_frames.stop()
+    def stop(self, **kwargs):
+        self.in_mic.stop(**kwargs)
+        self.vad_frames.stop(**kwargs)
 
         if self.use_asr:
-            self.asr.stop()
+            self.asr.stop(**kwargs)
 
         if self.use_iasr:
-            self.iasr.stop()
+            self.iasr.stop(**kwargs)
 
         if self.record:
-            self.audio_record.stop()
-            if self.use_asr:
-                self.text_record.stop()
-            if self.use_iasr:
-                self.inc_text_record.stop()
+            self.audio_record.stop(**kwargs)
+
         if self.debug:
             if self.use_asr:
-                self.asr_debug.stop()
+                self.asr_debug.stop(**kwargs)
         logging.info(f"{self.name}: stop_components @ {time.time()}")
 
 
 def test_hearing(args):
+    import sys
+
     hearing = Hearing(
         chunk_time=args.chunk_time,
         sample_rate=args.sample_rate,
         bytes_per_sample=args.bytes_per_sample,
         use_asr=args.use_asr,
+        cache_dir="/home/erik/.cache/agent/hearing",
         record=args.record,
-        debug=args.debug,
+        debug=True,
+        bypass=args.bypass,
     )
 
     print(hearing)
-    hearing.run_components()
+    print(hearing.cache_dir)
+    hearing.run()
+
     try:
         input()
     except KeyboardInterrupt:
         pass
-    hearing.stop_components()
+    print("stop")
+    hearing.stop()
+    print("stop")
+
+    sys.exit(0)
 
 
 if __name__ == "__main__":
@@ -337,8 +372,8 @@ if __name__ == "__main__":
     parser.add_argument("--sample_rate", type=int, default=16000)
     parser.add_argument("--bytes_per_sample", type=int, default=2)
     parser.add_argument("--use_asr", action="store_true")
+    parser.add_argument("--bypass", action="store_true")
     parser.add_argument("--record", action="store_true")
-    parser.add_argument("--debug", action="store_true")
 
     args = parser.parse_args()
     test_hearing(args)

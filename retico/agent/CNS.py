@@ -32,6 +32,10 @@ class CentralNervousSystem(AbstractModule):
         self.memory = Memory()
         self.utterance_history = []
 
+        # Used if agent is interrupted but did not finish a sufficient
+        # amount of the utterances
+        self.ask_question_again = False
+
         # Activity
         self.agent_speech_ongoing = False
         self.agent_last_speech_end_time = 0.0
@@ -71,14 +75,18 @@ class CentralNervousSystem(AbstractModule):
             else:
                 self.user.vad_fast_off.append(now)
 
-    def finalize_user(self):
-        self.user.end_time = time.time()
-        self.memory.update(self.user)
-
+    def init_user_turn(self):
         self.user = UserState()
         self.user.vad_base_start = self.vad_base_active
         self.user.vad_ipu_start = self.vad_ipu_active
         self.user.vad_fast_start = self.vad_fast_active
+
+    def finalize_user(self):
+        self.user.end_time = time.time()
+        print("finalize")
+        print(self.user)
+        self.memory.update(self.user)
+        self.user_turn_active = False
         if self.verbose:
             print("---------- FINALIZE USER  --------------")
 
@@ -91,6 +99,12 @@ class CentralNervousSystem(AbstractModule):
             print("---------- FINALIZE AGENT --------------")
         self.memory.update(self.agent, agent=True)
         self.agent = AgentState()
+        self.ask_question_again = False
+        print("---------- FINALIZE AGENT --------------")
+
+    def reset_agent_state(self):
+        print("RESET AGENT STATE")
+        self.agent = AgentState()
 
     def backchannel(self, text):
         self.backchannel_active = True
@@ -101,7 +115,8 @@ class CentralNervousSystem(AbstractModule):
 
     def start_speech(self, text=None):
         self.agent_speech_ongoing = True
-        self.agent.speech_start_time = time.time()
+        now = time.time()
+        self.agent.start_time = now
         # self.agent.update("speech_start", time.time() - self.start_time)
         if self.verbose:
             print(C.blue + "######### AGENT SPEECH ##########" + C.end)
@@ -114,17 +129,19 @@ class CentralNervousSystem(AbstractModule):
         self.append(output_iu)
 
     def stop_speech(self, finalize=True):
-        """Creates a dummy IUs with dispatch flag false and appends to output. This aborts the speech in the tts"""
-        now = time.time()
-        self.agent.speech_end_time = now
-        self.agent_last_speech_end_time = now
-        self.agent_speech_ongoing = False
-        if finalize:
-            self.finalize_agent()
-        output_iu = self.create_iu()
-        output_iu.payload = ""
-        output_iu.dispatch = False
-        self.append(output_iu)
+        """Creates a dummy IUs with dispatch flag false and appends to output. This aborts the speech in the tts. The
+        finalize flag is by default True but can be set to false for backchannels and the like which should not
+        influence the dialog"""
+        if self.agent_speech_ongoing:
+            now = time.time()
+            self.agent_last_speech_end_time = now
+            self.agent_speech_ongoing = False
+            if finalize:
+                self.finalize_agent()
+            output_iu = self.create_iu()
+            output_iu.payload = ""
+            output_iu.dispatch = False
+            self.append(output_iu)
 
     def process_iu(self, input_iu):
         if isinstance(input_iu, SpeechRecognitionIU):
@@ -137,21 +154,22 @@ class CentralNervousSystem(AbstractModule):
     def tts_activity(self, input_iu):
         # if self.verbose:
         #     print("self tts dispatch: ", input_iu.dispatch)
-        if input_iu.dispatch:
-            self.suspend = False
-        else:
-            if self.user_asr_active:
-                print(C.red, "Interrupted by user", C.end)
+        # if input_iu.dispatch:
+        #     self.suspend = False
+        # else:
+        #     if self.user_asr_active:
+        #         print(C.red, "Interrupted by user", C.end)
+        pass
 
     def audio_dispatcher_activity(self, input_iu):
         """
         Listen to
         """
         self.agent.completion = input_iu.completion
-        self.agent.utterance = input_iu.completion_words
+        if hasattr(input_iu, "completion_words"):
+            self.agent.utterance = input_iu.completion_words
 
         if input_iu.completion >= 1:
-            print(C.blue + "Speak DONE", C.end)
             if self.backchannel_active:
                 self.backchannel_active = False
             now = time.time()
@@ -183,7 +201,7 @@ class CNS(CentralNervousSystem):
             self.user.start_time = now
             self.user.asr_start_time = now
             if self.verbose:
-                print(C.yellow + f"ASR Onset: {self.user_asr_active}" + C.end)
+                print(C.cyan + f"ASR Onset: {self.user_asr_active}" + C.end)
 
         # update our preliminary utterance
         self.user.prel_utterance = self.user.utterance + input_iu.text
@@ -198,4 +216,4 @@ class CNS(CentralNervousSystem):
             self.user.utterance = self.user.prel_utterance
 
             if self.verbose:
-                print(C.yellow + "ASR Final" + C.end)
+                print(C.cyan + "ASR Final" + C.end)

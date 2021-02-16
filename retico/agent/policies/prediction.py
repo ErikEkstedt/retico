@@ -3,10 +3,10 @@ import json
 import time
 
 from retico.agent.CNS import CentralNervousSystem
-from retico.agent.agent import FrontalCortexBase
+from retico.agent.frontal_cortex import FrontalCortexBase
 from retico.agent.utils import clean_whitespace, Color as C
 
-URL_Prediction = "http://localhost:5000/prediction"
+URL_Prediction = "http://localhost:5001/prediction"
 
 
 class CNS_Continuous(CentralNervousSystem):
@@ -23,15 +23,24 @@ class CNS_Continuous(CentralNervousSystem):
     def set_user_turn_off(self):
         if self.user_turn_active:
             print(C.red + "########## OFF user state ########" + C.end)
-            self.user_turn_active = False
             self.user_turn_end_predicted = False
+            self.finalize_user()
 
     def asr(self, input_iu):
-        """Process the ASR input"""
+        """Process the ASR input
+
+        This is a passive ASR which does not trigger any turn-taking behaviour.
+
+        * Activates `self.user_asr_active` and start recording text in a new turn
+        * If `self.user_asr_active` is activated we call `self.set_user_turn_on`
+        * If ASR FINAL:
+            - The asr will collect new text and dismiss the previous
+
+        """
 
         # Activate user-asr state
         if not self.user_asr_active:
-            self.set_user_turn_on()
+            # self.set_user_turn_on()
             self.user_asr_active = True
             self.user.asr_start_time = time.time()
             if self.verbose:
@@ -52,8 +61,7 @@ class CNS_Continuous(CentralNervousSystem):
             # if we have predicted the end of the turn we finalize user
             # The ASR could still process the incomming text after the TS is predicted
             if self.user_turn_end_predicted:
-                self.set_user_turn_off()
-                self.finalize_user()
+                self.set_user_turn_off()  # finalize user
 
             # if self.
             if self.verbose:
@@ -61,12 +69,6 @@ class CNS_Continuous(CentralNervousSystem):
 
 
 class FC_Predict(FrontalCortexBase):
-    """
-    Starts the dialog by speaking its `DUMMY_RESPONSE`. Listens while the user asr is active and only does a fallback
-    action which executes the dummy response if the conversation has been inactive for at leat `fallback_duration`
-    seconds.
-    """
-
     def __init__(self, dm, trp_threshold=0.1, **kwargs):
         super().__init__(**kwargs)
         self.dm = dm
@@ -74,7 +76,7 @@ class FC_Predict(FrontalCortexBase):
 
         self.last_context = ""
         self.last_current_utterance = ""
-        self.last_user_asr_active = False
+        # self.last_user_asr_active = False
 
         self.turn_state_history = []
 
@@ -100,18 +102,21 @@ class FC_Predict(FrontalCortexBase):
         d = json.loads(response.content.decode())
         return d
 
-    def fast_eot(self):
+    def predict_trp(self, current_utt):
+        self.last_current_utterance = current_utt
+        context = self.cns.memory.get_dialog_text()
+        context.append(current_utt)
+
+        res = self.lm_prediction(context)
+        trp = res["p"]
+        return trp
+
+    def respond_or_listen(self):
         current_utt = clean_whitespace(self.cns.user.prel_utterance)
-
-        if current_utt != "" and current_utt != self.last_current_utterance:
-
-            self.last_current_utterance = current_utt
-            context = self.cns.memory.get_dialog_text()
-            context.append(current_utt)
-
-            res = self.lm_prediction(context)
-            trp = res["p"]
-
+        if self.check_utterance_dialog_end(current_utt):
+            self.dialog_ended = True
+        elif current_utt != "" and current_utt != self.last_current_utterance:
+            trp = self.predict_trp(current_utt)
             if self.verbose:
                 print("-" * 50)
                 print(C.cyan + "Fast REACTION" + C.end)
@@ -126,8 +131,9 @@ class FC_Predict(FrontalCortexBase):
             if trp >= self.trp_threshold:
                 self.cns.user.utterance_at_eot = current_utt
                 self.cns.user.trp_at_eot = trp
+                self.cns.user_turn_end_predicted = True
                 if self.verbose:
-                    # print(C.yellow + current_utt + C.green + f" -> ## {trp} ##" + C.end)
+                    print(C.yellow + current_utt + C.green + f" -> ## {trp} ##" + C.end)
                     print(
                         C.yellow
                         + str(self.cns.user.start_time)
@@ -137,16 +143,11 @@ class FC_Predict(FrontalCortexBase):
                         + C.end
                     )
                     print("-" * 50)
-                self.cns.agent.start_time = time.time()
-                (
-                    self.cns.agent.planned_utterance,
-                    self.dialog_ended,
-                ) = self.dm.get_response(context)
-                self.cns.start_speech(self.cns.agent.planned_utterance)
-                self.cns.user_turn_end_predicted = True
+                self.speak()
+                self.user_turn_off()
             else:
                 if self.verbose:
-                    # print(C.yellow + current_utt + C.red + f" -> ## {trp} ##" + C.end)
+                    print(C.yellow + current_utt + C.red + f" -> ## {trp} ##" + C.end)
                     print(
                         C.yellow
                         + str(self.cns.user.start_time)
@@ -158,19 +159,41 @@ class FC_Predict(FrontalCortexBase):
                     print("-" * 50)
                 self.cns.user_turn_end_predicted = False
 
-    def user_turn_on(self):
+    def trigger_user_turn_on(self):
         """The user turn has started.
         1. a) User turn is OFF
         1. b) The ASR module is OFF -> last_user_asr_active = False
         2. ASR turns on -> now we decode text -> last_user_asr_active = True
         """
         if not self.cns.user_turn_active:
-            if not self.last_user_asr_active and self.cns.user_asr_active:
+            if self.cns.vad_ipu_active:
+                print("VAD activation")
+                self.cns.init_user_turn()
                 self.cns.set_user_turn_on()
-                self.last_user_asr_active = True
+                # self.last_user_asr_active = True
 
     def user_turn_off(self):
-        print(C.red + "########## OFF (asr) user state ########" + C.end)
+        print(C.red + "########## OFF (FC) user state ########" + C.end)
+        self.cns.set_user_turn_off()
+        # self.last_user_asr_active = False
+
+    def update_state(self):
+        if self.only_user_active:
+            if self.verbose and self.turn_state_history[-1] != self.ONLY_USER:
+                print(C.red + "USER" + C.end)
+            self.turn_state_history.append(self.ONLY_USER)
+        elif self.both_inactive:
+            if self.verbose and self.turn_state_history[-1] != self.BOTH_INACTIVE:
+                print(C.red + "BOTH INACTIVE" + C.end)
+            self.turn_state_history.append(self.BOTH_INACTIVE)
+        elif self.both_active:
+            if self.verbose and self.turn_state_history[-1] != self.BOTH_ACTIVE:
+                print(C.red + "DOUBLE TALK" + C.end)
+            self.turn_state_history.append(self.BOTH_ACTIVE)
+        else:
+            if self.verbose and self.turn_state_history[-1] != self.ONLY_AGENT:
+                print(C.red + "AGENT" + C.end)
+            self.turn_state_history.append(self.ONLY_AGENT)
 
     def dialog_loop(self):
         """
@@ -183,59 +206,30 @@ class FC_Predict(FrontalCortexBase):
             self.cns.agent.start_time = time.time()
             self.cns.start_speech(self.cns.agent.planned_utterance)
 
-        self.turn_state_history.append("both_inactive")
+        self.turn_state_history.append(self.BOTH_INACTIVE)
         while not self.dialog_ended:
             time.sleep(self.LOOP_TIME)
 
-            self.user_turn_on()  # activates self.cns.user_turn_active if relevant
+            self.trigger_user_turn_on()  # activates self.cns.user_turn_active if relevant
 
-            ################ ONLY USER   ###################
-            if self.only_user_active:
-                if self.verbose and self.turn_state_history[-1] != self.ONLY_USER:
-                    print(C.red + "USER" + C.end)
-
-                # Predict upcomming EOT
+            if self.cns.user_turn_active:
+                # The user is active so we wait for vad IPU to trigger
+                # to determine EOT
                 if not self.cns.vad_ipu_active:
-                    self.fast_eot()  # predict eot, start_speaking, set cns.user_turn_end_predicted
+                    self.respond_or_listen()  # predict eot, start_speaking, set cns.user_turn_end_predicted
 
-                self.turn_state_history.append(self.ONLY_USER)
+            if self.cns.agent_speech_ongoing and self.cns.vad_ipu_active:
+                if self.is_interrupted():
+                    self.should_reapeat()
+                    self.cns.stop_speech(False)
 
-            elif self.both_inactive:
-                if self.verbose and self.turn_state_history[-1] != self.BOTH_INACTIVE:
-                    print(C.red + "BOTH INACTIVE" + C.end)
+            if self.both_inactive or self.only_user_active:
+                if self.fallback_inactivity():
+                    self.user_turn_off()
 
-                if self.turn_state_history[-1] == self.BOTH_INACTIVE:
-                    self.fallback_inactivity()
+            if not self.cns.vad_ipu_active and self.cns.user_turn_end_predicted:
+                self.user_turn_off()
 
-                self.turn_state_history.append(self.BOTH_INACTIVE)
+            self.update_state()
 
-            ################ DOUBLE TALK ###################
-            elif self.both_active:
-                if self.verbose and self.turn_state_history[-1] != self.BOTH_ACTIVE:
-                    print(C.red + "DOUBLE TALK" + C.end)
-
-                ###################
-                ## AGENT -> BOTH ##
-                ###################
-                if self.turn_state_history[-1] == self.ONLY_AGENT:
-                    pass
-                    # if self.is_interrupted():
-                    #     self.cns.stop_speech()
-                ###################
-                ## USER -> BOTH ##
-                ###################
-                elif self.turn_state_history[-1] == self.ONLY_USER:
-                    # do nothgin right now to see if overlaps is a problem
-                    pass
-                    # if self.cns.agent.completion < 0.2:
-                    #     finalize = False
-                    # self.cns.stop_speech(finalize)
-
-                self.turn_state_history.append(self.BOTH_ACTIVE)
-            ################ ONLY AGENT  ###################
-            else:
-                if self.verbose and self.turn_state_history[-1] != self.ONLY_AGENT:
-                    print(C.red + "AGENT" + C.end)
-                self.turn_state_history.append(self.ONLY_AGENT)
-
-        print("======== DIALOG DONE ========")
+        print("======== DIALOG LOOP DONE ========")

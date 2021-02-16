@@ -1,8 +1,13 @@
 from retico.agent import Hearing, Speech
 from retico.agent.CNS import CNS
-from retico.agent.agent import SimpleFC, FC_Baseline, FC_EOT
-from retico.agent.agent_prediction import FC_Predict, CNS_Continuous
 from retico.agent.dm import DM
+from retico.agent.policies import (
+    SimpleFC,
+    FC_Baseline,
+    FC_EOT,
+    FC_Predict,
+    CNS_Continuous,
+)
 from retico.agent.vad import VADModule
 
 
@@ -14,6 +19,7 @@ def test_cns(args):
         use_asr=True,
         record=False,
         debug=False,
+        bypass=args.bypass,
     )
     speech = Speech(
         chunk_time=args.speech_chunk_time,
@@ -22,6 +28,7 @@ def test_cns(args):
         tts_client="amazon",
         output_word_times=True,
         debug=False,
+        bypass=args.bypass,
     )
     cns = CNS(verbose=args.verbose)
     frontal = SimpleFC(
@@ -59,6 +66,7 @@ def test_fc_baseline(args):
         use_asr=True,
         record=False,
         debug=False,
+        bypass=args.bypass,
     )
     speech = Speech(
         chunk_time=args.speech_chunk_time,
@@ -67,6 +75,7 @@ def test_fc_baseline(args):
         tts_client="amazon",
         output_word_times=True,
         debug=False,
+        bypass=args.bypass,
     )
     cns = CNS(verbose=args.verbose)
     dm = DM()
@@ -123,6 +132,7 @@ def test_fc_eot(args):
         use_asr=True,
         record=False,
         debug=False,
+        bypass=args.bypass,
     )
     speech = Speech(
         chunk_time=args.speech_chunk_time,
@@ -131,6 +141,7 @@ def test_fc_eot(args):
         tts_client="amazon",
         output_word_times=True,
         debug=False,
+        bypass=args.bypass,
     )
     cns = CNS(verbose=args.verbose)
     dm = DM()
@@ -170,6 +181,7 @@ def test_prediction(args):
         bytes_per_sample=args.bytes_per_sample,
         use_asr=True,
         record=False,
+        bypass=args.bypass,
         debug=False,
     )
     speech = Speech(
@@ -179,6 +191,7 @@ def test_prediction(args):
         tts_client="amazon",
         output_word_times=True,
         debug=False,
+        bypass=args.bypass,
     )
     cns = CNS_Continuous(verbose=args.verbose)
     dm = DM()
@@ -230,16 +243,19 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(description="DialogState")
     parser.add_argument("--chunk_time", type=float, default=0.01)
-    parser.add_argument("--sample_rate", type=int, default=16000)
+    parser.add_argument("--sample_rate", type=int, default=48000)
     parser.add_argument("--speech_chunk_time", type=float, default=0.1)
-    parser.add_argument("--speech_sample_rate", type=int, default=16000)
+    parser.add_argument("--speech_sample_rate", type=int, default=48000)
     parser.add_argument("--bytes_per_sample", type=int, default=2)
     parser.add_argument("--trp", type=float, default=0.1)
     parser.add_argument("--fallback_duration", type=float, default=3)
     parser.add_argument("--backchannel_prob", type=float, default=0.4)
+    parser.add_argument("--bypass", action="store_true")
     parser.add_argument("--verbose", action="store_true")
     parser.add_argument("--test", type=str, default="cns")
     args = parser.parse_args()
+
+    print("BYPASS: ", args.bypass)
 
     if args.test == "cns":
         test_cns(args)

@@ -26,6 +26,8 @@ class UserState(StateCommon):
         super().__init__()
         self.name = "user"
         self.prel_utterance = ""
+        self.utterance_at_eot = ""
+        self.trp_at_eot = -1
 
         self.asr_start_time = 0.0
         self.asr_end_time = 0.0
@@ -52,9 +54,6 @@ class AgentState(StateCommon):
         self.planned_utterance = ""
         self.completion = 0.0
 
-        self.speech_start_time = 0.0
-        self.speech_end_time = 0.0
-
 
 class Memory:
     def __init__(self):
@@ -63,6 +62,10 @@ class Memory:
         self.start_time = 0.0
 
     def update(self, turn, agent=False):
+        # if agent:
+        #     self.turns_agent.append(deepcopy(turn))
+        # else:
+        #     self.turns_user.append(deepcopy(turn))
         if agent:
             self.turns_agent.append(turn)
         else:
@@ -76,18 +79,40 @@ class Memory:
     def get_dialog_text(self):
         turns = self.get_turns()
 
-        utt = turns[0].utterance
-        last_name = turns[0].name
+        # utt = str(turns[0].start_time) + turns[0].utterance
+        dialog = []
+        if len(turns) > 0:
+            utt = turns[0].utterance
+            last_name = turns[0].name
+            for t in turns[1:]:
+                if t.utterance == "":
+                    continue
+                if t.name == last_name:
+                    utt = utt + " " + clean_whitespace(t.utterance)
+                else:
+                    dialog.append(clean_whitespace(utt))
+                    # utt = str(t.start_time) + t.utterance
+                    utt = clean_whitespace(t.utterance)
+                    last_name = t.name
+            dialog.append(clean_whitespace(utt))
+        return dialog
+
+    def get_dialog_text_debug(self):
+        turns = self.get_turns()
 
         dialog = []
-        for t in turns[1:]:
-            if t.name == last_name:
-                utt = utt + " " + t.utterance
-            else:
-                dialog.append(clean_whitespace(utt))
-                utt = t.utterance
-                last_name = t.name
-        dialog.append(clean_whitespace(utt))
+        if len(turns) > 0:
+            utt = str(turns[0].start_time) + turns[0].utterance
+            last_name = turns[0].name
+
+            for t in turns[1:]:
+                if t.name == last_name:
+                    utt = utt + " " + str(t.start_time) + t.utterance
+                else:
+                    dialog.append(clean_whitespace(utt))
+                    utt = str(t.start_time) + t.utterance
+                    last_name = t.name
+            dialog.append(clean_whitespace(utt))
         return dialog
 
     def finalize(self):

@@ -138,7 +138,8 @@ class GoogleASRModule(abstract.AbstractModule):
 
     def request_thread(self):
         requests = None
-        while True:
+        self.active = True
+        while self.active:
             try:
 
                 if requests is not None:
