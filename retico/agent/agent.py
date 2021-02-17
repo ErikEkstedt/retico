@@ -7,10 +7,11 @@ from retico.agent import Hearing, Speech
 from retico.agent.CNS import CNS
 from retico.agent.dm.dm import DM, DM_LM, DMExperiment
 from retico.agent.policies import (
+    FC_Simple,
     FC_Baseline,
     FC_EOT,
     FC_Predict,
-    CNS_Continuous,
+    # CNS_Continuous,
 )
 from retico.agent.vad import VADModule
 
@@ -41,7 +42,7 @@ root/
 
 
 class Agent:
-    POLICIES = ["baseline", "eot", "prediction"]
+    POLICIES = ["baseline", "eot", "prediction", "simple"]
 
     def __init__(
         self,
@@ -117,21 +118,33 @@ class Agent:
         elif dm_type.startswith("gen"):
             print("DM: GENERATION")
             self.dm = DM_LM()
-        else:
+        elif dm_type.startswith("quest"):
             print("DM: QUESTIONS")
             self.dm = DM()
+        else:
+            self.dm = None
+
         self.vad = VADModule(
             chunk_time=chunk_time,
             onset_time=0.2,
             turn_offset=0.75,
-            ipu_offset=0.3,
-            fast_offset=0.1,
+            ipu_offset=0.1,
+            fast_offset=0.05,
             prob_thresh=0.9,
         )
 
-        if policy == "prediction":
+        self.cns = CNS(verbose=verbose)
+
+        if policy == "simple":
+            print("Policy: Simple")
+            self.fcortex = FC_Simple(
+                dm=self.dm,
+                central_nervous_system=self.cns,
+                fallback_duration=fallback_duration,
+                verbose=verbose,
+            )
+        elif policy == "prediction":
             print("Policy: PREDICTION")
-            self.cns = CNS_Continuous(verbose=verbose)
             self.fcortex = FC_Predict(
                 dm=self.dm,
                 central_nervous_system=self.cns,
@@ -139,35 +152,29 @@ class Agent:
                 trp_threshold=trp,
                 verbose=verbose,
             )
+        elif policy == "eot":
+            print("Policy: EOT")
+            self.fcortex = FC_EOT(
+                dm=self.dm,
+                central_nervous_system=self.cns,
+                trp_threshold=trp,
+                fallback_duration=fallback_duration,
+                verbose=verbose,
+            )
         else:
-            self.cns = CNS(verbose=verbose)
-
-            if policy == "baseline":
-                print("Policy: BASELINE")
-                self.fcortex = FC_Baseline(
-                    dm=self.dm,
-                    central_nervous_system=self.cns,
-                    fallback_duration=fallback_duration,
-                    verbose=verbose,
-                )
-            else:
-                print("Policy: EOT")
-                self.fcortex = FC_EOT(
-                    dm=self.dm,
-                    central_nervous_system=self.cns,
-                    trp_threshold=trp,
-                    fallback_duration=fallback_duration,
-                    backchannel_prob=backchannel_prob,
-                    verbose=verbose,
-                )
+            print("Policy: BASELINE")
+            self.fcortex = FC_Baseline(
+                dm=self.dm,
+                central_nervous_system=self.cns,
+                fallback_duration=fallback_duration,
+                verbose=verbose,
+            )
 
         self.cns.subscribe(self.speech.tts)
         self.hearing.asr.subscribe(self.cns)
         self.hearing.vad_frames.subscribe(self.vad)
         self.speech.audio_dispatcher.subscribe(self.cns)
-        self.speech.tts.subscribe(self.cns)
 
-        self.vad.event_subscribe(self.vad.EVENT_VAD_FAST_CHANGE, self.cns.vad_callback)
         self.vad.event_subscribe(self.vad.EVENT_VAD_IPU_CHANGE, self.cns.vad_callback)
         self.vad.event_subscribe(self.vad.EVENT_VAD_TURN_CHANGE, self.cns.vad_callback)
 
@@ -222,7 +229,8 @@ class Agent:
         # self.speech.tts.shutdown()
         self.vad.stop()
         self.cns.stop()
-        self.cns.memory.save(join(self.session_dir, "dialog.json"))
+        self.cns.save(join(self.session_dir, "dialog.json"))
+        # self.cns.memory.save(join(self.session_dir, "dialog.json"))
         self.join_audio()
         self.hearing.asr.active = False
         self.fcortex.dialog_ended = True

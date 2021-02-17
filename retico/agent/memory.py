@@ -1,14 +1,14 @@
 from os import makedirs
 from os.path import split
 from retico.agent.utils import clean_whitespace, write_json
+import time
 
 
 class StateCommon:
     def __init__(self):
         self.name = ""
         self.utterance = ""
-        self.start_time = 0.0
-        self.end_time = 0.0
+        self.start_time = time.time()
 
     def __repr__(self):
         s = self.name.upper()
@@ -16,6 +16,13 @@ class StateCommon:
             s += f"\n{k}: {v}"
         s += "\n" + "-" * 30
         return s
+
+    def finalize(self):
+        self.end_time = time.time()
+
+    def norm_time(self, start):
+        self.start_time -= start
+        self.end_time -= start
 
     def to_dict(self):
         return self.__dict__
@@ -28,31 +35,26 @@ class UserState(StateCommon):
         self.prel_utterance = ""
         self.utterance_at_eot = ""
         self.trp_at_eot = -1
+        self.all_trps = []
 
-        self.asr_start_time = 0.0
-        self.asr_end_time = 0.0
-
-        # Vad
-        self.vad_base_start = False
-        self.vad_base_on = []
-        self.vad_base_off = []
-
-        self.vad_ipu_start = False
-        self.vad_ipu_on = []
-        self.vad_ipu_off = []
-
-        self.vad_fast_start = False
-        self.vad_fast_on = []
-        self.vad_fast_off = []
+    def norm_time(self, start):
+        super().norm_time(start)
+        for trp in self.all_trps:
+            trp["time"] -= start
 
 
 class AgentState(StateCommon):
     def __init__(self):
         super().__init__()
         self.name = "agent"
-
         self.planned_utterance = ""
+        self.interrupted = False
         self.completion = 0.0
+
+    def finalize(self):
+        super().finalize()
+        if self.completion >= 1:
+            self.utterance = self.planned_utterance
 
 
 class Memory:
@@ -62,10 +64,6 @@ class Memory:
         self.start_time = 0.0
 
     def update(self, turn, agent=False):
-        # if agent:
-        #     self.turns_agent.append(deepcopy(turn))
-        # else:
-        #     self.turns_user.append(deepcopy(turn))
         if agent:
             self.turns_agent.append(turn)
         else:
@@ -115,18 +113,18 @@ class Memory:
             dialog.append(clean_whitespace(utt))
         return dialog
 
-    def finalize(self):
+    def finalize_turns(self):
         """
         Finalizes the memory. Sorts the turns in order of appearance and condences turns as necessary.
         """
-        data = {"start_time": self.start_time, "turns": []}
+        turns = []
         for turn in self.get_turns():
-            data["turns"].append(turn.to_dict())
-        return data
+            turn.norm_time(self.start_time)
+            turns.append(turn.to_dict())
+        return turns
 
-    def save(self, savepath, data=None):
-        if data is None:
-            data = self.finalize()
+    def save(self, savepath):
+        data = self.finalize_turns()
 
         dirpath = split(savepath)[0]
         if dirpath != "":

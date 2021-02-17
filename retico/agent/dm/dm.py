@@ -217,7 +217,6 @@ class DMExperiment(DMBase):
             assert context is not None, "context is None..."
 
             current_user_turn = context[-1]
-            print("DM: ", current_user_turn)
 
             if (
                 self.response_count > 1

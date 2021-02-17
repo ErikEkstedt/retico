@@ -9,29 +9,12 @@ URL_TRP = "http://localhost:5001/trp"
 
 
 class FC_EOT(FrontalCortexBase):
-    def __init__(self, dm, trp_threshold=0.1, backchannel_prob=0.4, **kwargs):
+    def __init__(self, trp_threshold=0.1, **kwargs):
         super().__init__(**kwargs)
-        self.dm = dm
         self.trp_threshold = trp_threshold
-        self.backchannel_prob = backchannel_prob
 
-        self.turn_state_history = []
-
-    @property
-    def both_inactive(self):
-        return not self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def both_active(self):
-        return self.cns.user_asr_active and self.cns.agent_speech_ongoing
-
-    @property
-    def only_user_active(self):
-        return self.cns.user_asr_active and not self.cns.agent_speech_ongoing
-
-    @property
-    def only_agent_active(self):
-        return not self.cns.user_asr_active and self.cns.agent_speech_ongoing
+        self.last_guess = None
+        self.last_current_utterance = None
 
     def lm_eot(self, text):
         json_data = {"text": text}
@@ -39,33 +22,42 @@ class FC_EOT(FrontalCortexBase):
         d = json.loads(response.content.decode())
         return d["trp"][-1]  # only care about last token
 
-    def respond_or_listen(self):
-        current_utt = clean_whitespace(self.cns.user.utterance)
-        if self.check_utterance_dialog_end(current_utt):
-            self.dialog_ended = True
-        else:
-            context = self.cns.memory.get_dialog_text()
-            context.append(current_utt)
-            trp = self.lm_eot(context)
-
-            if self.verbose:
-                for i, utt in enumerate(context):
-                    if i % 2 == 0:
-                        print(C.blue + utt, C.end)
-                    else:
-                        print(C.yellow + utt, C.end)
-
-            if trp >= self.trp_threshold:
-                if self.verbose:
-                    print(C.green + f"EOT recognized: {round(trp, 3)}" + C.end)
-                self.cns.finalize_user()
-                self.speak()
+    def trigger_user_turn_on(self):
+        """The user turn has started.
+        1. a) User turn is OFF
+        1. b) The ASR module is OFF -> last_user_asr_active = False
+        2. ASR turns on -> now we decode text -> last_user_asr_active = True
+        """
+        if not self.cns.user_turn_active:
+            if self.cns.vad_ipu_active and self.cns.asr_active:
+                # print(C.green + "########## FC: user turn ON ########" + C.end)
                 self.cns.init_user_turn()
-            else:
-                if self.verbose:
-                    print(C.red + f"listen: {1-round(trp, 3)}" + C.end)
-                # if random.random() <= self.backchannel_prob:
-                #     self.cns.backchannel("Go on.")
+
+    def trigger_user_turn_off(self):
+        should_respond = False
+        if self.cns.user_turn_active:
+            if not self.cns.vad_ipu_active and not self.cns.asr_active:
+                current_utt = clean_whitespace(self.cns.user.utterance)
+                if current_utt != self.last_current_utterance:
+                    self.last_current_utterance = current_utt
+                    context = self.cns.memory.get_dialog_text()
+                    context.append(current_utt)
+                    trp = self.lm_eot(context)
+                    self.cns.user.all_trps.append({"trp": trp, "time": time.time()})
+                    self.last_guess = "trp"
+                    if trp >= self.trp_threshold:
+                        should_respond = True
+                        self.cns.user.trp_at_eot = trp
+                        self.cns.user.utterance_at_eot = current_utt
+                        self.cns.finalize_user()
+                        if self.verbose:
+                            print(C.green + f"EOT recognized: {round(trp, 3)}" + C.end)
+                    else:
+                        if self.verbose:
+                            if self.last_guess != "listen":
+                                print(C.red + f"listen: {1-round(trp, 3)}" + C.end)
+                        self.last_guess = "listen"
+        return should_respond
 
     def dialog_loop(self):
         """
@@ -73,57 +65,23 @@ class FC_EOT(FrontalCortexBase):
         state.
 
         """
-
-        self.turn_state_history.append(self.BOTH_INACTIVE)
-
         if self.speak_first:
-            self.cns.agent.planned_utterance, self.dialog_ended = self.dm.get_response()
-            self.cns.start_speech(self.cns.agent.planned_utterance)
+            planned_utterance, self.dialog_ended = self.dm.get_response()
+            self.cns.init_agent_turn(planned_utterance)
 
         while not self.dialog_ended:
             time.sleep(self.LOOP_TIME)
 
-            last_state = self.turn_state_history[-1]
+            self.trigger_user_turn_on()
+            if self.trigger_user_turn_off():
+                self.get_response_and_speak()
+            self.fallback_inactivity()
 
-            if self.both_inactive:
-                if self.verbose and last_state != self.BOTH_INACTIVE:
-                    print(C.red + "BOTH INACTIVE" + C.end)
+            # updates the state if necessary
+            current_state = self.update_dialog_state()
+            if current_state == self.BOTH_ACTIVE:
+                if self.is_interrupted():
+                    self.should_repeat()
+                    self.cns.stop_speech(finalize=True)
 
-                if last_state == self.ONLY_USER:
-                    end = self.respond_or_listen()
-                    if end:
-                        print("END EVERYTHING")
-                        self.dialog_ended = True
-                        break
-                # elif last_state == self.ONLY_AGENT:
-                #     self.cns.finalize_agent()
-                else:
-                    self.fallback_inactivity()
-                self.turn_state_history.append(self.BOTH_INACTIVE)
-
-            elif self.both_active:
-                if self.verbose and last_state != self.BOTH_ACTIVE:
-                    print(C.red + "DOUBLE TALK" + C.end)
-
-                if last_state == self.ONLY_AGENT:
-                    if self.is_interrupted():
-                        self.should_reapeat()
-                        self.cns.stop_speech(False)
-                elif last_state == self.ONLY_USER:
-                    finalize = True
-                    if self.cns.agent.completion < 0.2:
-                        finalize = False
-                    self.cns.stop_speech(finalize)
-
-                self.turn_state_history.append(self.BOTH_ACTIVE)
-
-            elif self.only_user_active:
-                self.fallback_inactivity()
-                if self.verbose and last_state != self.ONLY_USER:
-                    print(C.red + "USER" + C.end)
-                self.turn_state_history.append(self.ONLY_USER)
-            else:
-                if self.verbose and last_state != self.ONLY_AGENT:
-                    print(C.red + "AGENT" + C.end)
-                self.turn_state_history.append(self.ONLY_AGENT)
         print("======== DIALOG DONE ========")
