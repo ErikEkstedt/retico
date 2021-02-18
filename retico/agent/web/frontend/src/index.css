@@ -12,16 +12,12 @@ code {
     monospace;
 }
 
-.turn_agent {
+.turn-agent {
   background: lightgreen;
-  padding: 10px;
-  margin: 5px;
 }
 
-.turn_user {
+.turn-user {
   background: lightblue;
-  padding: 10px;
-  margin: 5px;
 }
 
 .turn-info {
@@ -36,6 +32,9 @@ code {
 }
 
 .controls {
-  padding: 10px;
+  padding: 5px;
   margin: 5px;
+  background: lightgray;
+  border: 1px solid;
+  border-radius: 5px;
 }
