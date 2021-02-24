@@ -1,15 +1,16 @@
 from boto3 import Session
 from contextlib import closing
-from datetime import datetime
-from os import makedirs, listdir
-from os.path import join
+from os import makedirs
+from os.path import join, exists
 import json
 import subprocess
 import wave
+import shutil
 
 from retico.core.text.common import GeneratedTextIU
 from retico.core.audio.common import SpeechIU
 from retico.core import abstract
+from retico.agent.utils import read_json, write_json
 
 """
 Amazon Polly
@@ -172,7 +173,8 @@ class AmazonTTSModule(abstract.AbstractModule):
         bytes_per_sample=2,
         output_word_times=False,
         tts_sample_rate=16000,
-        cache_dir="/tmp",
+        cache_dir="/tmp/tts",
+        result_dir="/tmp",
         record=False,
         **kwargs,
     ):
@@ -185,33 +187,14 @@ class AmazonTTSModule(abstract.AbstractModule):
         self.bytes_per_sample = bytes_per_sample
         self.record = record
 
-        # tmp files
+        # cache files
         self.cache_dir = cache_dir
-        if self.cache_dir is None:
-            self.cache_dir = self.CACHE_DIR
-        self.cache_dir = join(self.cache_dir, "tts")
         makedirs(self.cache_dir, exist_ok=True)  # cache path
 
-    def save_audio_file(self, raw_audio, text=None):
-        if text is None:
-            text = "tts"
-        elif isinstance(text, list):
-            text = "_".join(text[:3])
-
-        time = datetime.now().strftime("%H_%M_%S")
-        raw_wav_path = join(self.cache_dir, time + "_" + text + ".wav")
-
-        with wave.open(raw_wav_path, "w") as obj:
-            obj.setnchannels(1)
-            obj.setsampwidth(2)
-            obj.setframerate(self.polly_sample_rate)
-            obj.writeframesraw(raw_audio)
-        return raw_wav_path
-
-    def resample_sox(self, wav_path):
-        new_path = wav_path.replace(".wav", f"_sr-{self.sample_rate}.wav")
-        subprocess.call(["sox", wav_path, "-r", str(self.sample_rate), new_path])
-        return new_path
+        # result files
+        self.result_dir = result_dir
+        self.result_dir = join(self.result_dir, "tts")
+        makedirs(self.result_dir, exist_ok=True)  # cache path
 
     def read_audio(self, wav_path):
         with wave.open(wav_path, "rb") as wav_file:
@@ -219,13 +202,20 @@ class AmazonTTSModule(abstract.AbstractModule):
             raw_audio = wav_file.readframes(w_length)
         return raw_audio, w_length
 
-    def resample_bytes(self, raw_audio, text=None):
-        # 1. save raw_audio to a file PATH.wav
-        # 2. sox resample file -> PATH2.wav
-        # 3. read PATH2.wav
-        wav_path = self.save_audio_file(raw_audio, text)
-        new_wav_path = self.resample_sox(wav_path)
-        raw_audio, _ = self.read_audio(new_wav_path)
+    def write_audio(self, raw_audio, filepath):
+        with wave.open(filepath, "w") as obj:
+            obj.setnchannels(1)
+            obj.setsampwidth(2)
+            obj.setframerate(self.polly_sample_rate)
+            obj.writeframesraw(raw_audio)
+
+    def resample_sox(self, wav_path):
+        tmp_path = wav_path.replace(".wav", "_tmp.wav")
+        subprocess.call(
+            ["sox", wav_path, "-r", str(self.sample_rate), tmp_path]
+        )  # resample to tmp file
+        shutil.move(tmp_path, wav_path)  # move tmp file to original
+        raw_audio, w_length = self.read_audio(wav_path)  # open new sampled audio
         return raw_audio
 
     def stop(self, **kwargs):
@@ -234,12 +224,38 @@ class AmazonTTSModule(abstract.AbstractModule):
     def process_iu(self, input_iu):
         output_iu = self.create_iu(input_iu)
         if input_iu.get_text() != "":
-            words, starts, ends, duration, raw_audio = self.tts.tts(input_iu.get_text())
+            text = input_iu.get_text()
 
-            if self.sample_rate != self.polly_sample_rate:
-                raw_audio = self.resample_bytes(raw_audio, words)
-            elif self.record:
-                _ = self.save_audio_file(raw_audio, words)
+            cache_file = join(self.cache_dir, "_".join(text.split()) + ".wav")
+            if exists(cache_file):
+                # print("Using Cache TTS")
+                raw_audio, _ = self.read_audio(cache_file)
+                info = read_json(cache_file.replace(".wav", ".json"))
+                words = info["words"]
+                starts = info["starts"]
+                ends = info["ends"]
+                duration = info["duration"]
+            else:
+                words, starts, ends, duration, raw_audio = self.tts.tts(
+                    input_iu.get_text()
+                )
+                # print("SAVE Cache TTS")
+                self.write_audio(raw_audio, cache_file)
+                if self.sample_rate != self.polly_sample_rate:
+                    # print("RESAMPLE Cache TTS")
+                    raw_audio = self.resample_sox(cache_file)
+                write_json(
+                    {
+                        "words": words,
+                        "starts": starts,
+                        "ends": ends,
+                        "duration": duration,
+                    },
+                    cache_file.replace(".wav", ".json"),
+                )
+
+            # if self.record:
+            #     _ = self.save_audio_file(raw_audio, words)
 
             nframes = len(raw_audio) / self.bytes_per_sample
             output_iu.set_audio(

@@ -18,6 +18,7 @@ class StateCommon:
         return s
 
     def finalize(self):
+        self.utterance = clean_whitespace(self.utterance)
         self.end_time = time.time()
 
     def norm_time(self, start):
@@ -53,6 +54,7 @@ class AgentState(StateCommon):
 
     def finalize(self):
         super().finalize()
+        self.planned_utterance = clean_whitespace(self.planned_utterance)
         if self.completion >= 1:
             self.utterance = self.planned_utterance
 

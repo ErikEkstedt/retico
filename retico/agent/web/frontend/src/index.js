@@ -23,69 +23,12 @@ const dialogURL = "/api/file/dialog";
 const hparamsURL = "/api/file/hparams";
 
 
-function CollapseDiv(props) {
-  const [open, setOpen] = useState(false);
-
-  // color 
-  let className = "turn-" + props.turn.name;
-  const entryStyle = {fontsize: 'small', overflowX: 'auto'}
-
-  let listItems = [];
-  if (props.turn !== undefined) {
-    let i=0
-    let key;
-    let val;
-    for (let p in props.turn) {
-      if (props.turn[p] !== undefined) {
-        if (p === 'all_trps'){
-          const trp = props.turn.all_trps.map((trp, i) => {
-            if (i > 0) {
-              return ", " + trp.trp.toString()
-            } else {
-              return trp.trp.toString()
-            }
-          })
-          listItems.push(
-            <li key={key} style={entryStyle}>
-              {p}: {trp}
-            </li>
-          )
-        } else {
-          listItems.push(
-            <li key={key} style={entryStyle}>
-              {p}: {props.turn[p].toString()}
-            </li>
-          )
-        }
-        i ++;
-      }
-    }
-  }
-
-  return (
-    <div>
-      <Button onClick={() => {
-        if (!open) {
-          props.onClick(props.turn.start_time)
-        }
-        setOpen(!open)
-        // console.log(props.turn.start_time)
-        }} className={className} >
-        {props.turn.utterance}
-      </Button>
-      <Collapse in={open}>
-        <ol style={{listStyleType: 'none'}}>{listItems}</ol>
-      </Collapse>
-    </div>
-  );
-}
-
 function Header(props) {
   // list hparam entries in a table
   let table = "";
   if (props.state.hparams !== undefined) {
-    let listItems = [];
     const hparams = props.state.hparams;
+    let listItems = [];
     let key;
     let i=0;
     for (let p in hparams) {
@@ -152,7 +95,88 @@ function Header(props) {
   );
 }
 
-class Dialog extends Component {
+function Turn(props) {
+  const [open, setOpen] = useState(false);
+
+  // color 
+  let className = "turn-" + props.turn.name;
+  const entryStyle = {fontsize: 'small', overflowX: 'auto'}
+
+  let listItems = [];
+  if (props.turn !== undefined) {
+    let i=0
+    let key;
+    let val;
+    for (let p in props.turn) {
+      if (props.turn[p] !== undefined) {
+        if (p === 'all_trps'){
+          const trp = props.turn.all_trps.map((trp, i) => {
+            if (i > 0) {
+              return ", " + trp.trp.toString()
+            } else {
+              return trp.trp.toString()
+            }
+          })
+          listItems.push(
+            <li key={key} style={entryStyle}>
+              {p}: {trp}
+            </li>
+          )
+        } else {
+          listItems.push(
+            <li key={key} style={entryStyle}>
+              {p}: {props.turn[p].toString()}
+            </li>
+          )
+        }
+        i ++;
+      }
+    }
+  }
+
+  return (
+    <li key={'turn_' + props.idx} >
+      <Button onClick={() => {if (!open) {props.onTimeClick(props.turn.start_time)} setOpen(!open)}} 
+        className={'turn ' + className} 
+      >
+        {props.turn.utterance}
+      </Button>
+      <Collapse in={open}>
+        <ol style={{listStyleType: 'circle'}}>{listItems}</ol>
+      </Collapse>
+    </li>
+  );
+}
+
+
+function Dialog(props) {
+  let turns;
+  if (props.dialog !== null) {
+    turns = props.dialog.turns.map((turn, i) => {
+      let side='left';
+      if (turn.name === 'agent') {
+        side='right'
+      }
+      return (
+        <Turn 
+          turn={turn}
+          onTimeClick={props.onTimeClick}
+          idx={i}
+        />
+      )
+    })
+  }
+  return (
+    <Container >
+      <div className="dialog">
+        <ol style={{listStyleType: 'none'}}> {turns}</ol>
+      </div>
+    </Container >
+  );
+}
+
+
+class App extends Component {
   constructor(props) {
     super(props);
     this.state = {
@@ -245,8 +269,8 @@ class Dialog extends Component {
         color = "#1111aa10"
       } else if (curState === "silence") {
         color = "#ffffff10"
-      } else if (curState === "both_active") {
-        color = "#aa111110"
+      } else if (curState === "double_talk") {
+        color = "#ff111130"
       }
 
       this.waveform.addRegion({
@@ -385,30 +409,7 @@ class Dialog extends Component {
     }
   };
 
-  getTurns() {
-    const dialog = this.state.dialog;
-    if (dialog !== null) {
-      return (
-        dialog.turns.map((turn, i) => {
-          let side='left';
-          if (turn.name === 'agent') {
-            side='right'
-          }
-          return (
-            <li key={'turn_' + i.toString()} >
-              <CollapseDiv 
-                turn={turn}
-                onClick={this.onTimeClick}
-              />
-            </li>
-          )
-        })
-      );
-    }
-  }
-
   render() {
-    const turns = this.getTurns();
     return (
       <Container>
         <Header 
@@ -422,14 +423,13 @@ class Dialog extends Component {
         />
         <div id="wave-timeline"></div>
         <div id="audioplayer"></div>
-        <div className='row'>
-          <div className="dialog">
-            <ol style={{listStyleType: 'none'}}>{turns}</ol>
-          </div>
-        </div>
+        <Dialog 
+          dialog={this.state.dialog} 
+          onTimeClick={this.onTimeClick}
+        />
       </Container>
     );
   }
 }
 
-ReactDOM.render(<Dialog />, document.getElementById("root"));
+ReactDOM.render(<App />, document.getElementById("root"));

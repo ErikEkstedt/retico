@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 import requests
 import json
 import random
@@ -61,6 +62,12 @@ class DMBase:
     def rank_responses(self, context, responses):
         json_data = {"context": context, "responses": responses}
         response = requests.post(URL_RANK, json=json_data)
+        d = json.loads(response.content.decode())
+        return d["response"]
+
+    def generate_response(self, context):
+        json_data = {"text": context}
+        response = requests.post(URL_SAMPLE, json=json_data)
         d = json.loads(response.content.decode())
         return d["response"]
 
@@ -138,15 +145,23 @@ class DM_LM(object):
 
 
 class DMExperiment(DMBase):
-    TASKS = ["exercise", "food", "hobbies"]
+    TASKS = ["exercise", "food", "hobbies", "travel"]
 
     acknowledgements = [
         "I see.",
         "alright.",
         "okay",
         "",
+        "",
+        "",
+        "",
     ]
-    segways = ["so,", "", "yeah,", "lets see,"]
+    segways = ["so,", "", "yeah,", "lets see,", "", ""]
+    chit_chat = [
+        "Is there anything in particular you want to tell me about?",
+        "If I were to do the same thing as you what is the most important thing to consider?",
+        "You seem very knowledgable, could you share a personal insight?",
+    ]
     answers = [
         # "I can't answer that question. Can we continue with the interview?",
         # "I can't answer any questions. Shall we continue?",
@@ -155,8 +170,9 @@ class DMExperiment(DMBase):
     ExercisePath = "/home/erik/projects/retico/retico/agent/dm/dialogs/exercise.json"
     FoodPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/food.json"
     HobbiesPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/hobbies.json"
+    TravelPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/travel.json"
 
-    def __init__(self, task):
+    def __init__(self, task, chit_chat_prob=0.0, short_heuristic_cutoff=3):
         assert task in self.TASKS, f"Please choose task in {self.TASKS}"
         self.task = task
         self.dialog = self._load_dialogs()
@@ -164,13 +180,17 @@ class DMExperiment(DMBase):
         self.randomize_seqway = True
         self.randomize_acknowledgements = True
         self.response_count = 0
-        self.short_heuristic_cutoff = 3
+        self.short_heuristic_cutoff = short_heuristic_cutoff
+        self.chit_chat_prob = chit_chat_prob
+        print("chit_chat_prob PROB: ", self.chit_chat_prob)
 
     def _load_dialogs(self):
         if self.task == "exercise":
             dialog = read_json(self.ExercisePath)
         elif self.task == "food":
             dialog = read_json(self.FoodPath)
+        elif self.task == "travel":
+            dialog = read_json(self.TravelPath)
         else:
             dialog = read_json(self.HobbiesPath)
         return dialog
@@ -223,10 +243,19 @@ class DMExperiment(DMBase):
                 and len(current_user_turn.split()) <= self.short_heuristic_cutoff
             ):
                 response = "Could you please elaborate on that"
-                end = False
+            elif (
+                random.random() < self.chit_chat_prob
+                and self.response_count > 2
+                and len(self.chit_chat) > 0
+            ):
+                print("Chit Chat")
+                # response = self.generate_response(context)
+                response = self.rank_responses(context, self.chit_chat)
+                self.chit_chat.pop(self.chit_chat.index(response))
             else:
                 questions = self.get_questions()
                 if len(questions) > 0:
+
                     # acknowledgement
                     if self.randomize_acknowledgements:
                         ack = random.choice(self.acknowledgements)
@@ -247,6 +276,14 @@ class DMExperiment(DMBase):
                     end = True
         self.response_count += 1
         return response, end
+
+    @staticmethod
+    def add_dm_args(parent_parser):
+        parser = ArgumentParser(parents=[parent_parser], add_help=False)
+        parser.add_argument("--task", type=str, default="exercise")
+        parser.add_argument("--chit_chat_prob", type=float, default=0.0)
+        parser.add_argument("--short_heuristic_cutoff", type=int, default=3)
+        return parser
 
 
 if __name__ == "__main__":

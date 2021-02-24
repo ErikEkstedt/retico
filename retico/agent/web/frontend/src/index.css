@@ -12,6 +12,18 @@ code {
     monospace;
 }
 
+.container {
+  max-width: 100%;
+  padding: 10px;
+}
+
+.turn {
+  padding: 0px 3px ;
+  margin: 0;
+  color: black;
+  text-align: left;
+}
+
 .turn-agent {
   background: lightgreen;
 }

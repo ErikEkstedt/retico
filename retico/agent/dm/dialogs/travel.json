@@ -1,0 +1,24 @@
+{
+    "introduction": ["Hi there, in this session I want to talk about one of your past travels. Are you ready to start?"],
+    "long": [
+        "Where did you travel?",
+        "Did you try any new foods that you could tell me about?",
+        "What is your best memory from the trip?",
+        "Did you visit any tourist attractions?",
+        "Can you tell me anything interesting about your trip?",
+        "Do you have any recommendations for people traveling there?",
+        "How was the weather during your trip?",
+        "Could you talk about who you traveled with?",
+        "Would you recommend others to go there?",
+        "How was the journey home?",
+        "Do you think that such a trip is suitable for families?",
+        "Did you do anything that you have not done before?",
+        "Do you think you are going to revisit any time soon"
+    ],
+    "short": [
+        "What mode of transportation did you use to get to your travel destination?",
+        "Was it a vacation or work related trip?",
+        "Would you say that it was a summer or winter trip?",
+        "For how long were you away?"
+    ]
+}

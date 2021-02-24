@@ -47,7 +47,8 @@ class DeviceStreamSpeakerModule(AbstractConsumingModule):
 
     TIMEOUT = 0.01
     CHANNELS = 1
-    DEVICE = "pulse_source_2"
+    DEVICE = "zoom_source"
+    # DEVICE = "pulse_source_2"
 
     @staticmethod
     def name():
@@ -165,6 +166,7 @@ class Speech:
         bypass=False,
         device_name="pulse_source_2",
         cache_dir="/tmp",
+        result_dir="/tmp",
         **kwargs,
     ):
         super().__init__(**kwargs)
@@ -209,7 +211,7 @@ class Speech:
         )
 
         if self.record:
-            audio_dir = join(cache_dir, "speech")
+            audio_dir = join(result_dir, "speech")
             makedirs(audio_dir, exist_ok=True)
             print("Speech: ", audio_dir)
             wav_filename = join(audio_dir, "agent_audio.wav")

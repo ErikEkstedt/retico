@@ -20,11 +20,13 @@ class FrontalCortexBase:
         speak_first=True,
         fallback_duration=4,
         verbose=False,
+        show_dialog=False,
     ):
         self.cns = central_nervous_system
         self.speak_first = speak_first
         self.dm = dm
         self.verbose = verbose
+        self.show_dialog = show_dialog
 
         self.dialog_ended = False
         self.suspend = False
@@ -79,11 +81,23 @@ class FrontalCortexBase:
             return True
         return False
 
+    def retrigger_user_turn(self):
+        if self.verbose:
+            print("Retrigger User")
+
+        if self.cns.agent.utterance == "":
+            self.cns.dialog_states[-2]["state"] = self.ONLY_USER
+            self.cns.dialog_states[-1]["state"] = self.ONLY_USER
+        else:
+            self.cns.dialog_states[-2]["state"] = self.BOTH_ACTIVE
+            self.cns.dialog_states[-1]["state"] = self.BOTH_ACTIVE
+        self.cns.init_user_turn(self.cns.memory.turns_user.pop(-1))
+
     def should_repeat(self):
         if self.cns.agent.completion <= self.repeat_ratio:
             self.cns.ask_question_again = True
             if self.verbose:
-                print("ask_question_again: True")
+                print("Repeat utterance")
 
     def get_response_and_speak(self, response=None):
         """
@@ -137,6 +151,17 @@ class FrontalCortexBase:
                 ret = True
         return ret
 
+    def trigger_user_turn_on(self):
+        """The user turn has started.
+        1. a) User turn is OFF
+        1. b) The ASR module is OFF -> last_user_asr_active = False
+        2. ASR turns on -> now we decode text -> last_user_asr_active = True
+        """
+        if not self.cns.user_turn_active:
+            if self.cns.vad_ipu_active and self.cns.asr_active:
+                # print(C.green + "########## FC: user turn ON ########" + C.end)
+                self.cns.init_user_turn()
+
     def start_loop(self):
         """Prepares the dialogue_loop and the DialogueState of the agent and the
         interlocutor by resetting the timers.
@@ -150,9 +175,6 @@ class FrontalCortexBase:
     def stop_loop(self):
         self.t.join()
         print("Stopped dialog loop")
-
-    def trigger_user_turn_on(self):
-        raise NotImplementedError("trigger_user_turn_on")
 
     def trigger_user_turn_off(self):
         raise NotImplementedError("trigger_user_turn_off")

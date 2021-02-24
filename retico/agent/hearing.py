@@ -33,7 +33,8 @@ class MicrophoneOutputBypass(AbstractProducingModule):
     """A module that produces IUs containing audio signals that are captures by
     a microphone."""
 
-    DEVICE = "pulse_sink_2"
+    # DEVICE = "pulse_sink_2"
+    DEVICE = "zoom_sink"
 
     @staticmethod
     def name():

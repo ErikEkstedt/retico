@@ -32,17 +32,6 @@ class FC_Simple(FrontalCortexBase):
 
 
 class FC_Baseline(FrontalCortexBase):
-    def trigger_user_turn_on(self):
-        """The user turn has started.
-        1. a) User turn is OFF
-        1. b) The ASR module is OFF -> last_user_asr_active = False
-        2. ASR turns on -> now we decode text -> last_user_asr_active = True
-        """
-        if not self.cns.user_turn_active:
-            if self.cns.vad_ipu_active and self.cns.asr_active:
-                # print(C.green + "########## FC: user turn ON ########" + C.end)
-                self.cns.init_user_turn()
-
     def trigger_user_turn_off(self):
         ret = False
         if self.cns.user_turn_active:
@@ -76,5 +65,6 @@ class FC_Baseline(FrontalCortexBase):
                 if self.is_interrupted():
                     self.should_repeat()
                     self.cns.stop_speech(finalize=True)
+                    self.retrigger_user_turn()  # put after stop speech
 
         print("======== DIALOG DONE ========")

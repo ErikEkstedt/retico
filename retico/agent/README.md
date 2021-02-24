@@ -1,12 +1,15 @@
-# Agent or Spoken Dialog System
+# Agent
 
+## Run
 
-## Agent
-
+```bash
+# Don't forget the external LM server :)
+python agent.py --dm_type experiment --root /PATH/TO/SAVE_DIR --task travel --policy baseline --trp .2 --bypass
+```
 
 ### CentralNervousSystem, CNS
 
-Connects the input perception (incomming text/audio, self-hearing) and provides the action methods (start_speech, stop_speech, finalize_user). 
+Connects the input perception (incomming text/audio, self-hearing) and provides the action methods (start\_speech, stop\_speech, finalize\_user, finalize\_agent). 
 
 
 ### FrontalCortex, FC
@@ -17,18 +20,37 @@ Given the state of the dialog the frontal cortex determines the next action, by 
 
 #### Loop
 
-The loop determines the clock rate of the central decision making process. Each step pauses for `SLEEP_TIME` seconds (e.g. .05 = 50ms) and then checks in on the CNS to determine what the current state is. At each point we want to know the current state and the transition for being here or simply the last and current state.
+The loop determines the clock rate of the central decision making process. Each step pauses for `SLEEP_TIME` seconds (e.g. 0.05=50ms)
 
-* ONLY_Agent -> BOTH_INACTIVE -> listen, fallback
-* ONLY_USER -> BOTH_INACTIVE -> speak, fallback
-* ONLY_Agent -> BOTH_ACTIVE -> is-interrupted? stop_speech, do nothing.
-* BOTH_INACTIVE -> ONLY_USER -> listen
-* ONLY_USER -> BOTH_ACTIVE -> Should not reach this state unless overlap action are used.
+```python
+  def dialog_loop(self):
+      """
+      A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
+      state.
 
+      """
+      if self.speak_first:
+          planned_utterance, self.dialog_ended = self.dm.get_response()
+          self.cns.init_agent_turn(planned_utterance)
 
-#### TODO
+      while not self.dialog_ended:
+          time.sleep(self.LOOP_TIME)
 
-* [ ] Record all audio in a coherent way
+          self.trigger_user_turn_on()
+          if self.trigger_user_turn_off():  # policy specific
+              self.get_response_and_speak()
+
+          self.fallback_inactivity()
+
+          # updates the state if necessary
+          current_state = self.update_dialog_state()
+          if current_state == self.BOTH_ACTIVE:
+              if self.is_interrupted():
+                  self.should_repeat()
+                  self.cns.stop_speech(finalize=True)
+                  self.retrigger_user_turn()  # put after stop speech
+      print("======== DIALOG LOOP DONE ========")
+```
 
 
 
@@ -36,52 +58,51 @@ The loop determines the clock rate of the central decision making process. Each 
 
 ## Components
 
-###  VAD
+* Hearing
+  * VAD
+  * ASR
+* Speech
+  * TTS
+  * AudioDispatcher
+* DM
+  * simple questionare using an external LM for ranking
+* CentralNervousSystem, CNS
+  * The incremental dialog nexus
+* Frontal Cortex, FC
+  * the dialog loop/behavior
+  * superclass extended by different policies
 
-The Vad module is a wrapper around google webrtc.Vad function. It operates of frames of 10, 20 or 30 ms. 
-
-It simply transforms and AudioIUs into VadIUs. Where the only information we get is if the frame is
-considered to include speech-activity or not.
-
-This module may then be used in higher level VadModules that may smoothen the signal and estimate
-EOT.
-
------------------------------
-
+  
 ## Bypass
 
-Bypass the audio around the system in order to use the agent over zooom.
+**Only tested on Linux**
 
-
-- Use Jack
-- Open `catia`
-  - patchbay for Jack
-  - visual interface for our audio modules
-- Add a new sink/source pair using `pactl`
+Bypass the audio around the system in order to use the agent over zooom. Run the commands below to add new audio-modules and user their device names in the agents Zoom.
 
 ```bash
-pactl load-module module-jack-sink client_name=pulse_sink_2 channels=2 connect=no
-pactl load-module module-jack-source client_name=pulse_source_2 channels=2 connect=no
+pactl load-module module-jack-sink client_name=zoom_sink channels=2 connect=no
+pactl load-module module-jack-source client_name=zoom_source channels=2 connect=no
 ```
 
+Make sure to add the `--bypass` flag in order to use the correct audio modules (hardcoded to the modules above).
+
+```bash
+python agent.py --dm_type experiment --root /PATH/TO/SAVE_DIR --task travel --policy baseline --trp .2 --bypass
+```
+
+
+### Misc on linux
+
+**Check the audio routing**
+- Use [Jack](https://jackaudio.org/)
+- Open [Catia](https://kx.studio/Applications:Catia)
+  - a patchbay for Jack
+  - visual interface for our audio modules
+  - used to check if zoom is connected correctly
+- Add a new sink/source pair using `pactl`
 - Add special connections for headset to listen in on answers
 ```bash
 alsa_out -j HeadsetOut -d hw:CARD=S7 -r 44100 channels=2 >/dev/null &
 ```
-
-- then start zoom/voice app
+- start zoom/voice app
     - choose the created sink/source for microphone and speaker
-- Hearing is working.   
-  - run `python hearing.py --bypass --debug`
-  - Use the zoom-speaker-device as input device
-  - using the `bypass` device instead of the system microphone...
-- Speech is NOT working.   
-  - run `python speech.py --bypass --debug`
-  - Use the zoom-microphone-device as output module in `Speech`
-  - [ ] Fix resample in TTS-module
-      - always use 16000khz for the tts api
-      - resample the audio before sending it to the output device
-  - Sample rate from tts is `8/16/22/24 kHz` and jack operates on 44100/48000 and others by default but not 16000
-- Agent
-  - The agent is not working because it interrupts itself.
-  - The audio from the system goes to speakers and back into the system

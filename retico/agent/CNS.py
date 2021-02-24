@@ -9,7 +9,7 @@ from retico.core.audio.common import DispatchedAudioIU
 
 # from retico.core.audio.common import SpeechIU, DispatchedAudioIU
 
-from retico.agent.utils import write_json, Color as C
+from retico.agent.utils import clean_whitespace, write_json, Color as C
 from retico.agent.memory import Memory, UserState, AgentState
 
 
@@ -121,16 +121,22 @@ class CNS(AbstractModule):
         #     print(C.green + "######### AGENT TURN ##########" + C.end)
 
     def finalize_agent(self):
+        self.agent_turn_active = False
         if self.agent.utterance != "":
             self.agent.finalize()
-            self.agent_turn_active = False
             self.agent_turn_off.append(self.agent.end_time)  # must be after .finalize
             self.memory.update(self.agent, agent=True)
 
-    def init_user_turn(self):
-        self.user = UserState()
+    def init_user_turn(self, user_state=None):
+        if user_state == None:
+            self.user = UserState()
+            self.user_turn_on.append(self.user.start_time)  # must be after .finalize
+        else:
+            # retriggered an erroneous EOT guess by interruption
+            # use the last user state
+            # change the last dialog state to both
+            self.user = user_state
         self.user_turn_active = True
-        self.user_turn_on.append(self.user.start_time)  # must be after .finalize
 
     def finalize_user(self):
         self.user.finalize()

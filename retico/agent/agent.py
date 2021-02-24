@@ -1,3 +1,4 @@
+from argparse import ArgumentParser
 from os.path import join, exists
 from os import makedirs
 import subprocess
@@ -49,6 +50,8 @@ class Agent:
         policy="baseline",
         dm_type="experiment",
         task="exercise",
+        chit_chat_prob=0.0,
+        short_heuristic_cutoff=3,
         chunk_time=0.01,
         sample_rate=48000,
         bytes_per_sample=2,
@@ -58,8 +61,10 @@ class Agent:
         backchannel_prob=0.5,
         trp=0.1,
         record=True,
-        verbose=False,
         bypass=False,
+        verbose=False,
+        show_dialog=False,
+        tts_cache_path="/home/erik/.cache/agent/tts",
         root="/home/erik/.cache/agent",
     ):
         policy = policy.lower()
@@ -107,14 +112,19 @@ class Agent:
             output_word_times=True,
             bypass=bypass,
             record=record,
-            cache_dir=self.session_dir,
+            cache_dir=tts_cache_path,
+            result_dir=self.session_dir,
             debug=False,
         )
 
         if dm_type.startswith("experiment"):
             print("DM: EXPERIMENT")
             print("TASK: ", task)
-            self.dm = DMExperiment(task=task)
+            self.dm = DMExperiment(
+                task=task,
+                chit_chat_prob=chit_chat_prob,
+                short_heuristic_cutoff=short_heuristic_cutoff,
+            )
         elif dm_type.startswith("gen"):
             print("DM: GENERATION")
             self.dm = DM_LM()
@@ -126,10 +136,10 @@ class Agent:
 
         self.vad = VADModule(
             chunk_time=chunk_time,
-            onset_time=0.2,
+            onset_time=0.15,
             turn_offset=0.75,
-            ipu_offset=0.1,
-            fast_offset=0.05,
+            ipu_offset=0.2,
+            fast_offset=0.1,
             prob_thresh=0.9,
         )
 
@@ -215,6 +225,27 @@ class Agent:
         subprocess.call(cmd)
         print("Joined audio -> ", comb_wav)
 
+    @staticmethod
+    def add_agent_args(parent_parser):
+        parser = ArgumentParser(parents=[parent_parser], add_help=False)
+        parser.add_argument("--policy", type=str, default="baseline")
+        parser.add_argument("--dm_type", type=str, default="experiment")
+
+        parser = DMExperiment.add_dm_args(parser)
+
+        parser.add_argument("--root", type=str, default="/tmp/Agent")
+        parser.add_argument("--chunk_time", type=float, default=0.01)
+        parser.add_argument("--sample_rate", type=int, default=48000)
+        parser.add_argument("--speech_chunk_time", type=float, default=0.1)
+        parser.add_argument("--speech_sample_rate", type=int, default=48000)
+        parser.add_argument("--bytes_per_sample", type=int, default=2)
+        parser.add_argument("--trp", type=float, default=0.1)
+        parser.add_argument("--fallback_duration", type=float, default=3)
+        parser.add_argument("--backchannel_prob", type=float, default=0.5)
+        parser.add_argument("--bypass", action="store_true")
+        parser.add_argument("--verbose", action="store_true")
+        return parser
+
     def start(self):
         self.cns.run()
         self.vad.run()
@@ -237,23 +268,9 @@ class Agent:
 
 
 if __name__ == "__main__":
-    import argparse
 
-    parser = argparse.ArgumentParser(description="DialogState")
-    parser.add_argument("--policy", type=str, default="baseline")
-    parser.add_argument("--dm_type", type=str, default="experiment")
-    parser.add_argument("--task", type=str, default="exercise")
-    parser.add_argument("--root", type=str, default="/tmp/Agent")
-    parser.add_argument("--chunk_time", type=float, default=0.01)
-    parser.add_argument("--sample_rate", type=int, default=48000)
-    parser.add_argument("--speech_chunk_time", type=float, default=0.1)
-    parser.add_argument("--speech_sample_rate", type=int, default=48000)
-    parser.add_argument("--bytes_per_sample", type=int, default=2)
-    parser.add_argument("--trp", type=float, default=0.1)
-    parser.add_argument("--fallback_duration", type=float, default=3)
-    parser.add_argument("--backchannel_prob", type=float, default=0.5)
-    parser.add_argument("--bypass", action="store_true")
-    parser.add_argument("--verbose", action="store_true")
+    parser = ArgumentParser(description="DialogState")
+    parser = Agent.add_agent_args(parser)
     args = parser.parse_args()
 
     # args.root = "/home/erik/Documents/Agent"
@@ -264,6 +281,8 @@ if __name__ == "__main__":
         policy=args.policy,
         dm_type=args.dm_type,
         task=args.task,
+        chit_chat_prob=args.chit_chat_prob,
+        short_heuristic_cutoff=args.short_heuristic_cutoff,
         chunk_time=args.chunk_time,
         sample_rate=args.sample_rate,
         bytes_per_sample=args.bytes_per_sample,
