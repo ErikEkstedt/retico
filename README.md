@@ -1,3 +1,17 @@
+# Added Stuff
+
+This is very much a work in progress...
+
+Added some new things in this fork namely the `retico/agent` directory but also `retico/modules/amazon` for TTS.
+
+* install retico as described below
+* look in the `retico/agent` folder
+
+
+
+
+# Retico Original
+
 ReTiCo is a python framework to enable real time incremental conversational spoken dialogue systems.
 The architecture is based on the paper of Schlangen and Skantze "A General, Abstract Model of Incremental Dialogue Processing" (2011).
 
