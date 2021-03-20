@@ -203,13 +203,25 @@ class StreamingSpeakerModule(abstract.AbstractConsumingModule):
         """The callback function that gets called by pyaudio."""
         if self.audio_buffer:
             try:
-                audio_paket = self.audio_buffer.get(timeout=TIMEOUT)
-                return (audio_paket, pyaudio.paContinue)
+                raw_audio = self.audio_buffer.get(timeout=TIMEOUT)
+                # audio_paket = self.audio_buffer.get(timeout=TIMEOUT)
+                # return (audio_paket, pyaudio.paContinue)
             except queue.Empty:
-                pass
-        return (b"\0" * frame_count * self.sample_width, pyaudio.paContinue)
+                raw_audio = b"\0" * frame_count * self.sample_width
+                # pass
 
-    def __init__(self, chunk_size, rate=44100, sample_width=2, **kwargs):
+        if self.ongoing:
+            self.wavfile.writeframes(raw_audio)
+        return (raw_audio, pyaudio.paContinue)
+
+    def __init__(
+        self,
+        chunk_size,
+        filename="/tmp/agent_speaker.wav",
+        rate=44100,
+        sample_width=2,
+        **kwargs
+    ):
         """Initialize the streaming speaker module.
 
         Args:
@@ -219,12 +231,14 @@ class StreamingSpeakerModule(abstract.AbstractConsumingModule):
             sample_width (int): The sample width of the audio. Defaults to 2.
         """
         super().__init__(**kwargs)
+        self.filename = filename
         self.chunk_size = chunk_size
         self.rate = rate
         self.sample_width = sample_width
 
         self._p = pyaudio.PyAudio()
 
+        self.ongoing = True
         self.audio_buffer = queue.Queue()
         self.stream = None
 
@@ -244,10 +258,16 @@ class StreamingSpeakerModule(abstract.AbstractConsumingModule):
             stream_callback=self.callback,
             frames_per_buffer=self.chunk_size,
         )
+        self.wavfile = wave.open(self.filename, "wb")
+        self.wavfile.setframerate(self.rate)
+        self.wavfile.setnchannels(CHANNELS)
+        self.wavfile.setsampwidth(self.sample_width)
         self.stream.start_stream()
 
     def shutdown(self):
         """Close the audio stream."""
+        self.ongoing = False
+        self.wavfile.close()
         self.stream.stop_stream()
         self.stream.close()
         self.stream = None

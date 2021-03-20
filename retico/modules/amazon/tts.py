@@ -215,7 +215,7 @@ class AmazonTTSModule(abstract.AbstractModule):
             ["sox", wav_path, "-r", str(self.sample_rate), tmp_path]
         )  # resample to tmp file
         shutil.move(tmp_path, wav_path)  # move tmp file to original
-        raw_audio, w_length = self.read_audio(wav_path)  # open new sampled audio
+        raw_audio, _ = self.read_audio(wav_path)  # open new sampled audio
         return raw_audio
 
     def stop(self, **kwargs):
@@ -242,7 +242,7 @@ class AmazonTTSModule(abstract.AbstractModule):
                 # print("SAVE Cache TTS")
                 self.write_audio(raw_audio, cache_file)
                 if self.sample_rate != self.polly_sample_rate:
-                    # print("RESAMPLE Cache TTS")
+                    print("RESAMPLE Cache TTS")
                     raw_audio = self.resample_sox(cache_file)
                 write_json(
                     {
