@@ -1,0 +1,15 @@
+{
+  "grades": {
+    "responsiveness": "4",
+    "natural": "3",
+    "enjoyment": "4"
+  },
+  "anno": [
+    { "anno": "interruption", "time": 13.276 },
+    { "anno": "interruption", "time": 52.178 },
+    { "anno": "interruption", "time": 78.979 },
+    { "anno": "interruption", "time": 126.982 },
+    { "anno": "interruption", "time": 171.857 }
+  ]
+}
+

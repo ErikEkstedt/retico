@@ -1,0 +1,1 @@
+{"policy": "prediction", "dm_type": "experiment", "task": "travel_b", "chunk_time": 0.03, "sample_rate": 48000, "bytes_per_sample": 2, "speech_chunk_time": 0.03, "speech_sample_rate": 48000, "fallback_duration": 2.0, "backchannel_prob": 0.5, "trp": 0.1, "verbose": false, "bypass": false, "date": "2021-03-11_15:06"}

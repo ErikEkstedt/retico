@@ -1,13 +1,11 @@
 {
     "introduction": ["Hi there, in this session I am going to ask you questions about exercise. Are you ready to start?"],
-    "long": [
+    "questions": [
         "Please tell me about your weekly exercise?",
         "Could you talk about your favorite kind of exercise and why you like it?",
         "How often do you exercise in general?",
         "How do you usually plan out your weekly exercise?",
-        "What is some important aspects of exercise in your life?"
-    ],
-    "short": [
+        "What is some important aspects of exercise in your life?",
         "Which do you like better, running or yoga?",
         "Which do you like better, weight lifting or swimming?",
         "Which do you like better, situps or spinning?",

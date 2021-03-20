@@ -1,0 +1,22 @@
+{
+    "introduction": ["Hi there, in this session I want to talk about one of your past travels. Are you ready to start?"],
+    "questions": {
+        "0": ["Where did you travel?", "Where did you go?", "What was your travel destination?"],
+        "1": ["Did you try any new foods that you could tell me about?", "Tell me about the best food you ate", "Any delicious meals that stood out?"],
+        "2": ["What is your best memory from the trip?", "Tell me about your favorite memory from the trip", "What was your favorite part of the trip?"],
+        "3": ["Did you visit any tourist attractions?", "Did you visit any museums or natural parks?"], // todo
+        "4": ["Can you tell me anything interesting about your trip?", "Did anything interesting happen during the trip?", "Any surprising memories you can tell me about?"],
+        "5": ["Do you have any recommendations for people traveling there?", "What would you recommend to other people visiting?", "Any advice to other people visiting?"],
+        "6": ["How was the weather during your trip?", "Tell me about the wheather during your stay", "Where you happy with the weather?"],
+        "7": ["Could you talk about who you traveled with?", "Did you travel in company or alone?", "Tell me about your travel partners"],
+        "8": ["Would you recommend others to go there?", "Would you recommend others to take a similar trip?", ""],
+        "9": ["How was the journey home?"],
+        "10": ["Do you think that such a trip is suitable for families?"],
+        "11": ["Did you do anything that you have not done before?"],
+        "12": ["Do you think you are going to revisit any time soon"],
+        "13": ["What mode of transportation did you use to get to your travel destination?"],
+        "14": ["Was it a vacation or work related trip?"],
+        "15": ["Would you say that it was a summer or winter trip?"],
+        "16": ["For how long were you away?"]
+    }
+}

@@ -17,6 +17,63 @@ code {
   padding: 10px;
 }
 
+.player {
+  padding: 4px;
+  border-radius: 5px;
+  border: solid 1px black;
+}
+
+.media-container {
+  text-align: center;
+  margin: 3px;
+}
+
+.media-controls {
+  text-align: center;
+  border-radius: 5px;
+  border: solid 1px black;
+  background: #eaeaea;
+  width: 120px;
+  margin: auto
+}
+
+.play-btn {
+  width: 40px;
+  height: 40px;
+  border-radius: 5px;
+  margin: 2px 1px;
+  border: none;
+  cursor: pointer;
+  background-size: contain;
+}
+
+#play {
+  background-image: url('assets/pause.svg');
+}
+
+#pause {
+  background-image: url('assets/play.svg');
+}
+
+.skip-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 5px;
+  margin: 2px 1px;
+  border: none;
+  cursor: pointer;
+  background-size: contain;
+}
+
+#start {
+  background-image: url('assets/bb.svg');
+}
+
+#end {
+  background-image: url('assets/ff.svg');
+}
+
+
 .turn {
   padding: 0px 3px ;
   margin: 0;

@@ -1,0 +1,1 @@
+{"policy": "baseline", "dm_type": "experiment", "task": "travel_a", "chunk_time": 0.01, "sample_rate": 48000, "bytes_per_sample": 2, "speech_chunk_time": 0.1, "speech_sample_rate": 48000, "fallback_duration": 2, "backchannel_prob": 0.5, "trp": 0.1, "verbose": false, "bypass": false, "date": "2021-03-09_15:32"}

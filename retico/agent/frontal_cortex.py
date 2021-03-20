@@ -6,6 +6,7 @@ from retico.agent.utils import Color as C
 
 class FrontalCortexBase:
     LOOP_TIME = 0.05  # 50ms  update frequency
+    # LOOP_TIME = 0.01  # 50ms  update frequency
 
     # turn states
     BOTH_ACTIVE = "double_talk"
@@ -18,12 +19,15 @@ class FrontalCortexBase:
         central_nervous_system,
         dm=None,
         speak_first=True,
-        fallback_duration=4,
+        fallback_duration=0.7,
+        no_input_duration=5,
+        no_rank=True,
         verbose=False,
         show_dialog=False,
     ):
         self.cns = central_nervous_system
         self.speak_first = speak_first
+        self.no_rank = no_rank
         self.dm = dm
         self.verbose = verbose
         self.show_dialog = show_dialog
@@ -34,6 +38,9 @@ class FrontalCortexBase:
         self.repeat_ratio = 0.8
 
         self.fallback_duration = fallback_duration
+        self.no_input_duration = no_input_duration
+
+        self.last_speaker = None
 
     @property
     def both_active(self):
@@ -54,16 +61,20 @@ class FrontalCortexBase:
     def update_dialog_state(self):
         if self.only_user:
             current_state = self.ONLY_USER
+            self.last_speaker = "user"
         elif self.only_agent:
             current_state = self.ONLY_AGENT
+            self.last_speaker = "agent"
         elif self.both_active:
             current_state = self.BOTH_ACTIVE
+            self.last_speaker = "both"
         else:
             current_state = self.BOTH_INACTIVE
 
         if self.cns.dialog_states[-1]["state"] != current_state:
             if self.verbose:
                 print(C.red + "===" + current_state + "===" + C.end)
+                print(C.blue + "===" + self.last_speaker + "===" + C.end)
             self.cns.dialog_states.append({"state": current_state, "time": time.time()})
             return current_state
 
@@ -113,23 +124,41 @@ class FrontalCortexBase:
             self.cns.init_agent_turn(response)
         elif self.dm is None:
             self.cns.init_agent_turn("This is me talking.")
-        else:
-            context = self.cns.memory.get_dialog_text()
-            (
-                planned_utterance,
-                self.dialog_ended,
-            ) = self.dm.get_response(context)
+        elif self.no_rank:
+            context, last_speaker = self.cns.memory.get_dialog_text()
+            if last_speaker != "user":
+                if self.cns.user.utterance != "":
+                    context.append(self.cns.user.utterance)
+                elif self.cns.user.prel_utterance != "":
+                    context.append(self.cns.user.prel_utterance)
+            (planned_utterance, self.dialog_ended, data) = self.dm.get_response(
+                context, no_rank=True
+            )
             self.cns.init_agent_turn(planned_utterance)
+        else:
+            context, last_speaker = self.cns.memory.get_dialog_text()
+            if last_speaker != "user":
+                if self.cns.user.utterance != "":
+                    context.append(self.cns.user.utterance)
+                elif self.cns.user.prel_utterance != "":
+                    context.append(self.cns.user.prel_utterance)
+            (planned_utterance, self.dialog_ended, data) = self.dm.get_response(context)
+            self.cns.init_agent_turn(planned_utterance)
+            if data is not None:
+                self.cns.user.tokens_on_rank = data["tokens"]
+                self.cns.user.eot_on_rank = data["eot"]
+                self.cns.user.time_on_rank = data["time"]
 
     def fallback_inactivity(self):
         """
         If there have been more than `self.fallback_duration` of mutual silence we trigger the agent  to speak
-
-        * Finalize the user
-        *
         """
+
+        def both_silent():
+            return not self.cns.vad_turn_active and not self.cns.agent_turn_active
+
         ret = False
-        if not self.cns.vad_turn_active and not self.cns.agent_turn_active:
+        if both_silent():
             now = time.time()
             # the user silence time
             try:  # since last user activity
@@ -144,10 +173,19 @@ class FrontalCortexBase:
                 agent_silence = now - self.cns.start_time
 
             latest_activity_time = min(agent_silence, user_silence)
-            if latest_activity_time >= self.fallback_duration:
+            if latest_activity_time >= self.fallback_duration and (
+                self.last_speaker == "user" or self.last_speaker == "both"
+            ):
                 print("FALLBACK")
-                self.cns.finalize_user()
                 self.get_response_and_speak()
+                self.cns.user.fallback = True
+                self.cns.finalize_user()
+                ret = True
+            elif latest_activity_time > self.no_input_duration:
+                print("No INPUT  FALLBACK")
+                self.get_response_and_speak()
+                self.cns.user.fallback = True
+                self.cns.finalize_user()
                 ret = True
         return ret
 
@@ -177,7 +215,36 @@ class FrontalCortexBase:
         print("Stopped dialog loop")
 
     def trigger_user_turn_off(self):
+        """
+        This should be implemented by any specific turn-taking policy
+        """
         raise NotImplementedError("trigger_user_turn_off")
 
     def dialog_loop(self):
-        raise NotImplementedError("dialog loop not implemented")
+        """
+        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
+        state.
+
+        """
+        if self.speak_first:
+            planned_utterance, self.dialog_ended, _ = self.dm.get_response()
+            print("spoke first")
+            self.cns.init_agent_turn(planned_utterance)
+
+        while not self.dialog_ended:
+            time.sleep(self.LOOP_TIME)
+
+            self.trigger_user_turn_on()
+            if self.trigger_user_turn_off():
+                self.get_response_and_speak()
+            self.fallback_inactivity()
+
+            # updates the state if necessary
+            current_state = self.update_dialog_state()
+            if current_state == self.BOTH_ACTIVE:
+                if self.is_interrupted():
+                    self.should_repeat()
+                    self.cns.stop_speech(finalize=True)
+                    self.retrigger_user_turn()  # put after stop speech
+
+        print("======== DIALOG DONE ========")

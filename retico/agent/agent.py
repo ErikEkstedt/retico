@@ -7,43 +7,20 @@ from datetime import datetime
 from retico.agent import Hearing, Speech
 from retico.agent.CNS import CNS
 from retico.agent.dm.dm import DM, DM_LM, DMExperiment
-from retico.agent.policies import (
-    FC_Simple,
-    FC_Baseline,
-    FC_EOT,
-    FC_Predict,
-    # CNS_Continuous,
-)
-from retico.agent.vad import VADModule
-
-# from retico.agent.utils import create_session_dir, write_json
+from retico.agent.policies import FC_Baseline, FC_BaselineVad, FC_EOT, FC_Predict
 from retico.agent.utils import write_json
-
-
-"""
-Experiment
-
-
-* 3 different dialogs with 3 different policies
-* 1 Folder for each user with subfolders for each policy
-* The researcher needs to start each task/policy and provide a root dir
-
-root/
-    ├── baseline
-    ├── eot
-    └── prediction
-        ├── hearing/
-        ├── speech/
-        ├── tts/
-        ├── annotation.json
-        ├── dialog.json
-        ├── dialog.wav
-        └── hparams.json
-"""
+from retico.agent.vad import VADModule
 
 
 class Agent:
-    POLICIES = ["baseline", "eot", "prediction", "simple"]
+    POLICIES = ["baseline", "baselinevad", "eot", "prediction"]
+    """
+    Agent
+
+    Connects all the incremental Modules together.
+    Saves hyperparameters
+    Joins user/agent audio files
+    """
 
     def __init__(
         self,
@@ -52,10 +29,10 @@ class Agent:
         task="exercise",
         chit_chat_prob=0.0,
         short_heuristic_cutoff=3,
-        chunk_time=0.01,
+        chunk_time=0.05,
         sample_rate=48000,
         bytes_per_sample=2,
-        speech_chunk_time=0.1,
+        speech_chunk_time=0.05,
         speech_sample_rate=48000,
         fallback_duration=2,
         backchannel_prob=0.5,
@@ -63,7 +40,6 @@ class Agent:
         record=True,
         bypass=False,
         verbose=False,
-        show_dialog=False,
         tts_cache_path="/home/erik/.cache/agent/tts",
         root="/home/erik/.cache/agent",
     ):
@@ -117,6 +93,25 @@ class Agent:
             debug=False,
         )
 
+        self.vad = VADModule(
+            chunk_time=chunk_time,
+            onset_time=0.15,
+            turn_offset=0.75,
+            ipu_offset=0.2,
+            fast_offset=0.1,
+            prob_thresh=0.9,
+        )
+        self.cns = CNS(verbose=verbose)
+
+        # Connect incremental components
+        self.cns.subscribe(self.speech.tts)
+        self.hearing.asr.subscribe(self.cns)
+        self.hearing.vad_frames.subscribe(self.vad)
+        self.speech.audio_dispatcher.subscribe(self.cns)
+        self.vad.event_subscribe(self.vad.EVENT_VAD_IPU_CHANGE, self.cns.vad_callback)
+        self.vad.event_subscribe(self.vad.EVENT_VAD_TURN_CHANGE, self.cns.vad_callback)
+
+        # Dialog Manager
         if dm_type.startswith("experiment"):
             print("DM: EXPERIMENT")
             print("TASK: ", task)
@@ -134,26 +129,8 @@ class Agent:
         else:
             self.dm = None
 
-        self.vad = VADModule(
-            chunk_time=chunk_time,
-            onset_time=0.15,
-            turn_offset=0.75,
-            ipu_offset=0.2,
-            fast_offset=0.1,
-            prob_thresh=0.9,
-        )
-
-        self.cns = CNS(verbose=verbose)
-
-        if policy == "simple":
-            print("Policy: Simple")
-            self.fcortex = FC_Simple(
-                dm=self.dm,
-                central_nervous_system=self.cns,
-                fallback_duration=fallback_duration,
-                verbose=verbose,
-            )
-        elif policy == "prediction":
+        # Frontal cortex policy / turn-taking / spoken-dialog-controler
+        if policy == "prediction":
             print("Policy: PREDICTION")
             self.fcortex = FC_Predict(
                 dm=self.dm,
@@ -171,6 +148,14 @@ class Agent:
                 fallback_duration=fallback_duration,
                 verbose=verbose,
             )
+        elif policy == "baselinevad":
+            print("Policy: BASELINE-VAD")
+            self.fcortex = FC_BaselineVad(
+                dm=self.dm,
+                central_nervous_system=self.cns,
+                fallback_duration=fallback_duration,
+                verbose=verbose,
+            )
         else:
             print("Policy: BASELINE")
             self.fcortex = FC_Baseline(
@@ -179,14 +164,6 @@ class Agent:
                 fallback_duration=fallback_duration,
                 verbose=verbose,
             )
-
-        self.cns.subscribe(self.speech.tts)
-        self.hearing.asr.subscribe(self.cns)
-        self.hearing.vad_frames.subscribe(self.vad)
-        self.speech.audio_dispatcher.subscribe(self.cns)
-
-        self.vad.event_subscribe(self.vad.EVENT_VAD_IPU_CHANGE, self.cns.vad_callback)
-        self.vad.event_subscribe(self.vad.EVENT_VAD_TURN_CHANGE, self.cns.vad_callback)
 
         self.save_hyperparameters()
 
@@ -240,7 +217,7 @@ class Agent:
         parser.add_argument("--speech_sample_rate", type=int, default=48000)
         parser.add_argument("--bytes_per_sample", type=int, default=2)
         parser.add_argument("--trp", type=float, default=0.1)
-        parser.add_argument("--fallback_duration", type=float, default=3)
+        parser.add_argument("--fallback_duration", type=float, default=2)
         parser.add_argument("--backchannel_prob", type=float, default=0.5)
         parser.add_argument("--bypass", action="store_true")
         parser.add_argument("--verbose", action="store_true")
@@ -261,14 +238,12 @@ class Agent:
         self.vad.stop()
         self.cns.stop()
         self.cns.save(join(self.session_dir, "dialog.json"))
-        # self.cns.memory.save(join(self.session_dir, "dialog.json"))
         self.join_audio()
         self.hearing.asr.active = False
         self.fcortex.dialog_ended = True
 
 
 if __name__ == "__main__":
-
     parser = ArgumentParser(description="DialogState")
     parser = Agent.add_agent_args(parser)
     args = parser.parse_args()

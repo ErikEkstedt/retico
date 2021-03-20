@@ -1,0 +1,14 @@
+
+#turn-agent {
+  background: lightgreen;
+  color: black;
+}
+
+#turn-user {
+  background: lightblue;
+  color: black;
+}
+
+.Turn {
+  margin: 5px 0px;
+}

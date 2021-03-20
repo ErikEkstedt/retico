@@ -63,7 +63,7 @@ class DMBase:
         json_data = {"context": context, "responses": responses}
         response = requests.post(URL_RANK, json=json_data)
         d = json.loads(response.content.decode())
-        return d["response"]
+        return d["response"], d
 
     def generate_response(self, context):
         json_data = {"text": context}
@@ -107,7 +107,7 @@ class DM(DMBase):
                     main_questions = [q["question"] for q in self.questions]
                     q_to_ind = {q: i for i, q in enumerate(main_questions)}
 
-                    response = self.rank_responses(context, main_questions)
+                    response, _ = self.rank_responses(context, main_questions)
                     self.current_question = self.questions.pop(q_to_ind[response])
                     self.current_follow_ups = self.current_question["follow_ups"]
                     self.n_current_follow_ups = 0
@@ -118,7 +118,7 @@ class DM(DMBase):
                     # print("New Follow up Question")
                     q_to_ind = {q: i for i, q in enumerate(self.current_follow_ups)}
 
-                    response = self.rank_responses(context, self.current_follow_ups)
+                    response, _ = self.rank_responses(context, self.current_follow_ups)
                     self.current_follow_ups.pop(
                         q_to_ind[response]
                     )  # remove the follow up
@@ -141,12 +141,11 @@ class DM_LM(object):
             response = requests.post(URL_SAMPLE, json=json_data)
             d = json.loads(response.content.decode())
             utterance = d["response"]
-        return utterance, end
+        return utterance, end, None
 
 
 class DMExperiment(DMBase):
-    TASKS = ["exercise", "food", "hobbies", "travel"]
-
+    TASKS = ["travel_a", "travel_b", "travel_c", "exercise", "food", "hobbies"]
     acknowledgements = [
         "I see.",
         "alright.",
@@ -166,13 +165,22 @@ class DMExperiment(DMBase):
         # "I can't answer that question. Can we continue with the interview?",
         # "I can't answer any questions. Shall we continue?",
     ]
+    elaborate = [
+        "Could you please elaborate on that.",
+        "Please, tell me more about that.",
+        "Go on.",
+        "Care to add some more details?",
+    ]
 
     ExercisePath = "/home/erik/projects/retico/retico/agent/dm/dialogs/exercise.json"
     FoodPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/food.json"
     HobbiesPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/hobbies.json"
-    TravelPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/travel.json"
 
-    def __init__(self, task, chit_chat_prob=0.0, short_heuristic_cutoff=3):
+    TravelAPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/travel_a.json"
+    TravelBPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/travel_b.json"
+    TravelCPath = "/home/erik/projects/retico/retico/agent/dm/dialogs/travel_c.json"
+
+    def __init__(self, task, chit_chat_prob=0.0, short_heuristic_cutoff=2):
         assert task in self.TASKS, f"Please choose task in {self.TASKS}"
         self.task = task
         self.dialog = self._load_dialogs()
@@ -182,6 +190,7 @@ class DMExperiment(DMBase):
         self.response_count = 0
         self.short_heuristic_cutoff = short_heuristic_cutoff
         self.chit_chat_prob = chit_chat_prob
+        self.last_response = None
         print("chit_chat_prob PROB: ", self.chit_chat_prob)
 
     def _load_dialogs(self):
@@ -189,15 +198,20 @@ class DMExperiment(DMBase):
             dialog = read_json(self.ExercisePath)
         elif self.task == "food":
             dialog = read_json(self.FoodPath)
-        elif self.task == "travel":
-            dialog = read_json(self.TravelPath)
-        else:
+        elif self.task == "hobbies":
             dialog = read_json(self.HobbiesPath)
+        elif self.task == "travel_a":
+            dialog = read_json(self.TravelAPath)
+        elif self.task == "travel_b":
+            dialog = read_json(self.TravelBPath)
+        elif self.task == "travel_c":
+            dialog = read_json(self.TravelCPath)
+        else:
+            raise FileNotFoundError(f"Task {self.task} not found...")
         return dialog
 
     def get_questions(self):
-        questions = self.dialog["short"] + self.dialog["long"]
-        # print("questions: ", len(questions))
+        questions = self.dialog["questions"]
         if len(questions) > 0:
             questions += self.answers
         return questions
@@ -205,17 +219,11 @@ class DMExperiment(DMBase):
     def pop_response(self, response):
         kind = None
         pop_index = 1
-        for i, question in enumerate(self.dialog["short"]):
+        for i, question in enumerate(self.dialog["questions"]):
             if response == question:
-                kind = "short"
+                kind = "questions"
                 pop_index = i
                 break
-
-        if kind is None:
-            for i, question in enumerate(self.dialog["long"]):
-                if response == question:
-                    kind = "long"
-                    pop_index = i
 
         if kind is None:
             for i, question in enumerate(self.answers):
@@ -229,20 +237,47 @@ class DMExperiment(DMBase):
             else:
                 self.dialog[kind].pop(pop_index)
 
-    def get_response(self, context=None):
+    def get_response(self, context=None, no_rank=True):
         end = False
+        data = None
         if self.response_count == 0:
             response = self.dialog["introduction"][0]
+        elif no_rank:
+            current_user_turn = context[-1]
+            if (
+                self.response_count > 1
+                and len(current_user_turn.split()) <= self.short_heuristic_cutoff
+                and self.last_response != "elaborate"
+                and len(self.elaborate) > 0
+            ):
+                response = random.choice(self.elaborate)
+                self.elaborate.pop(self.elaborate.index(response))
+                self.last_response = "elaborate"
+            else:
+                questions = self.get_questions()
+                self.last_response = "regular"
+                if len(questions) > 0:
+                    # acknowledgement
+                    ack = random.choice(self.acknowledgements)
+                    segway = random.choice(self.segways)
+                    response = questions[0]
+                    self.pop_response(response)  # remove response
+                    response = segway + " " + response
+                else:
+                    response = "Thank you for answering my questions. This session is over. Goodbye."
+                    end = True
         else:
-            assert context is not None, "context is None..."
-
             current_user_turn = context[-1]
 
             if (
                 self.response_count > 1
                 and len(current_user_turn.split()) <= self.short_heuristic_cutoff
+                and self.last_response != "elaborate"
+                and len(self.elaborate) > 0
             ):
-                response = "Could you please elaborate on that"
+                response = random.choice(self.elaborate)
+                self.elaborate.pop(self.elaborate.index(response))
+                self.last_response = "elaborate"
             elif (
                 random.random() < self.chit_chat_prob
                 and self.response_count > 2
@@ -250,32 +285,34 @@ class DMExperiment(DMBase):
             ):
                 print("Chit Chat")
                 # response = self.generate_response(context)
-                response = self.rank_responses(context, self.chit_chat)
+                response, _ = self.rank_responses(context, self.chit_chat)
                 self.chit_chat.pop(self.chit_chat.index(response))
+                self.last_response = "chitchat"
             else:
                 questions = self.get_questions()
+                self.last_response = "regular"
                 if len(questions) > 0:
 
                     # acknowledgement
                     if self.randomize_acknowledgements:
                         ack = random.choice(self.acknowledgements)
                     else:
-                        ack = self.rank_responses(context, self.acknowledgements)
+                        ack, _ = self.rank_responses(context, self.acknowledgements)
 
                     if self.randomize_seqway:
                         segway = random.choice(self.segways)
                     else:
                         segs = [ack + " " + s for s in self.segways]
-                        segway = self.rank_responses(context, segs)
+                        segway, _ = self.rank_responses(context, segs)
 
-                    response = self.rank_responses(context, questions)
+                    response, data = self.rank_responses(context, questions)
                     self.pop_response(response)  # remove response
                     response = segway + " " + response
                 else:
                     response = "Thank you for answering my questions. This session is over. Goodbye."
                     end = True
         self.response_count += 1
-        return response, end
+        return response, end, data
 
     @staticmethod
     def add_dm_args(parent_parser):

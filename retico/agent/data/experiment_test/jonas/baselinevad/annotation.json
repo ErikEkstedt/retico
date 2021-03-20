@@ -1,0 +1,16 @@
+{
+  "grades": {
+    "responsiveness": "4",
+    "natural": "2",
+    "enjoyment": "3"
+  },
+  "anno": [
+    { "anno": "interruption", "time": 19.175 },
+    { "anno": "interruption", "time": 63.125 },
+    { "anno": "interruption", "time": 65.325 },
+    { "anno": "missed-eot", "time": 75.375 },
+    { "anno": "interruption", "time": 131.425 },
+    { "anno": "interruption", "time": 150.525 }
+  ]
+}
+

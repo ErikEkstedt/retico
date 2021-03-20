@@ -47,31 +47,3 @@ class FC_EOT(FrontalCortexBase):
                                 print(C.red + f"listen: {1-round(trp, 3)}" + C.end)
                         self.last_guess = "listen"
         return should_respond
-
-    def dialog_loop(self):
-        """
-        A constant loop which looks at the internal state of the agent, the estimated state of the user and the dialog
-        state.
-
-        """
-        if self.speak_first:
-            planned_utterance, self.dialog_ended = self.dm.get_response()
-            self.cns.init_agent_turn(planned_utterance)
-
-        while not self.dialog_ended:
-            time.sleep(self.LOOP_TIME)
-
-            self.trigger_user_turn_on()
-            if self.trigger_user_turn_off():
-                self.get_response_and_speak()
-            self.fallback_inactivity()
-
-            # updates the state if necessary
-            current_state = self.update_dialog_state()
-            if current_state == self.BOTH_ACTIVE:
-                if self.is_interrupted():
-                    self.should_repeat()
-                    self.cns.stop_speech(finalize=True)
-                    self.retrigger_user_turn()  # put after stop speech
-
-        print("======== DIALOG DONE ========")

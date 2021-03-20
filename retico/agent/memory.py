@@ -35,8 +35,8 @@ class UserState(StateCommon):
         self.name = "user"
         self.prel_utterance = ""
         self.utterance_at_eot = ""
-        self.trp_at_eot = -1
         self.all_trps = []
+        self.pred_time = []
 
     def norm_time(self, start):
         super().norm_time(start)
@@ -95,7 +95,7 @@ class Memory:
                     utt = clean_whitespace(t.utterance)
                     last_name = t.name
             dialog.append(clean_whitespace(utt))
-        return dialog
+        return dialog, last_name
 
     def get_dialog_text_debug(self):
         turns = self.get_turns()

@@ -1,13 +1,11 @@
 {
     "introduction": ["Hi there, in this session I am going to ask you questions about hobbies. Are you ready to start?"],
-    "long": [
+    "questions": [
         "Please tell me about your hobbies and interests.",
         "Could you talk about your favorite hobby and why you like it?",
         "How much time in general do you spend on your hobbies?",
         "How do you find information about your hobbies?",
-        "What are some interesting things to know about your hobby?"
-    ],
-    "short": [
+        "What are some interesting things to know about your hobby?",
         "Which do you like better, watch a movie or play an instrument?",
         "Which do you like better, cinema or a nice walk?",
         "Which do you like better, board games or video games?",

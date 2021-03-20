@@ -1,0 +1,21 @@
+{
+    "introduction": ["Hi there, in this session I want to talk about one of your past travels. Where did you go?"],
+    "questions": [
+        "How did you get there?",
+        "Did you travel during the summer?",
+        "Did you eat anything that you particularly enjoyed?",
+        "Tell me about your favorite memory from the trip.",
+        "Did you visit any museums, parks or anything like that?",
+        "Did anything interesting happen during the trip?",
+        "What would you recommend to other people visiting?",
+        "Tell me about the weather during your stay.",
+        "Did you travel with others or by yourself?",
+        "Would you recommend other to take a similar trip?",
+        "Was the trip suitable for families?",
+        "Did you try anything new during the trip?",
+        "Would you go back?",
+        "Would you say it was a vacation or a work trip?",
+        "How long was your trip?",
+        "Tell me about your journey home."
+    ]
+}

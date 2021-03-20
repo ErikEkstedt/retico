@@ -187,6 +187,7 @@ class App extends Component {
       showTRP: false,
       showAgentInterrupt: false,
       showDialogStates: false,
+      playPauseButtonId: 'pause',
       zoom: 50,
     };
     this.onZoom=this.onZoom.bind(this)
@@ -202,7 +203,7 @@ class App extends Component {
   componentDidMount() {
     this.waveform = WaveSurfer.create({
       container: "#audioplayer",
-      backend: "MediaElement",
+      backend: "WebAudio",
       backgroundColor: "#fafafa",
       scrollParent: true,
       mediaControls: true,
@@ -235,6 +236,25 @@ class App extends Component {
       // console.log(data);
     })
   }
+
+  playPause() {
+    if (this.state.playing) {
+      this.waveform.pause()
+      this.setState({playing: false, playPauseButtonId: "pause"})
+    } else {
+      this.waveform.play()
+      this.setState({playing: true, playPauseButtonId: "play"})
+    }
+  }
+  goStart() {
+    // this.waveform.skipBackward(10)
+    this.waveform.seekAndCenter(0)
+  }
+  goEnd() {
+    // this.waveform.skipForward(10)
+    this.waveform.seekAndCenter(1)
+  }
+
 
   onTimeClick(time) {
     this.waveform.backend.media.currentTime = time;
@@ -421,8 +441,15 @@ class App extends Component {
           toggleDialogStates={this.toggleDialogStates}
           state={this.state}
         />
-        <div id="wave-timeline"></div>
-        <div id="audioplayer"></div>
+        <div className="media-container">
+          <div id="wave-timeline"></div>
+          <div id="audioplayer"></div>
+          <div className="media-controls">
+            <button onClick={() => this.goStart()} className="skip-btn" id="start"></button>
+            <button onClick={() => this.playPause()} className="play-btn" id={this.state.playPauseButtonId}></button>
+            <button onClick={() => this.goEnd()} className="skip-btn" id="end"></button>
+          </div>
+        </div>
         <Dialog 
           dialog={this.state.dialog} 
           onTimeClick={this.onTimeClick}

@@ -1,0 +1,95 @@
+{
+  "turns": [
+    {
+      "name": "agent",
+      "utterance": "Hi there, in this session I want to talk about one of your past travels. Are you ready to start?",
+      "start_time": 0.00013709068298339844,
+      "planned_utterance": "Hi there, in this session I want to talk about one of your past travels. Are you ready to start?",
+      "interrupted": false,
+      "completion": 1,
+      "end_time": 5.407792806625366
+    },
+    {
+      "name": "user",
+      "utterance": "yeah let's do this",
+      "start_time": 6.587907552719116,
+      "prel_utterance": "yeah let's do this at",
+      "utterance_at_eot": "",
+      "all_trps": [],
+      "pred_time": [],
+      "end_time": 8.651752233505249,
+      "tokens_on_rank": ["yeah", "let", "'s", "do", "this"],
+      "eot_on_rank": [
+        0.013303903862833977,
+        3.684850889840163e-5,
+        0.00026803946821019053,
+        0.00037023291224613786,
+        0.023035535588860512
+      ],
+      "time_on_rank": 0.1151
+    },
+    {
+      "name": "agent",
+      "utterance": "Where did you travel?",
+      "start_time": 8.777879476547241,
+      "planned_utterance": "Where did you travel?",
+      "interrupted": false,
+      "completion": 1,
+      "end_time": 9.823364019393921
+    },
+    {
+      "name": "user",
+      "utterance": "I travel all over the country",
+      "start_time": 11.100699186325073,
+      "prel_utterance": "I travel all over the country good",
+      "utterance_at_eot": "",
+      "all_trps": [],
+      "pred_time": [],
+      "end_time": 14.264153480529785,
+      "tokens_on_rank": ["i", "travel", "all", "over", "the", "country"],
+      "eot_on_rank": [
+        2.9461371013894677e-5,
+        0.00017505133291706443,
+        1.0094751814904157e-5,
+        0.005917481612414122,
+        0.0001064557654899545,
+        0.16763931512832642
+      ],
+      "time_on_rank": 0.122
+    },
+    {
+      "name": "agent",
+      "utterance": "yeah, Can you tell me anything interesting about your trip?",
+      "start_time": 14.397377252578735,
+      "planned_utterance": "yeah, Can you tell me anything interesting about your trip?",
+      "interrupted": false,
+      "completion": 1.0,
+      "end_time": 17.359233379364014
+    }
+  ],
+  "vad_ipu_on": [6.241652011871338, 10.740718126296997, 18.810581922531128],
+  "vad_ipu_off": [7.644778490066528, 13.125564813613892, 19.3083393573761],
+  "vad_turn_on": [6.241150617599487, 10.740003108978271, 18.810100078582764],
+  "vad_turn_off": [8.144595623016357, 13.624793291091919],
+  "asr_on": [6.5590431690216064, 11.059464454650879, 19.066251039505005],
+  "asr_off": [8.642834663391113, 14.247285604476929],
+  "agent_turn_on": [
+    0.00013709068298339844,
+    8.777879476547241,
+    14.397377252578735
+  ],
+  "agent_turn_off": [5.407792806625366, 9.823364019393921, 17.359233379364014],
+  "agent_interrupted": [],
+  "dialog_states": [
+    { "state": "only_agent", "time": 0.05028986930847168 },
+    { "state": "silence", "time": 5.430356979370117 },
+    { "state": "only_user", "time": 6.587934255599976 },
+    { "state": "only_agent", "time": 8.77793264389038 },
+    { "state": "silence", "time": 9.840731859207153 },
+    { "state": "only_user", "time": 11.10072135925293 },
+    { "state": "only_agent", "time": 14.397444486618042 },
+    { "state": "silence", "time": 17.37090563774109 },
+    { "state": "only_user", "time": 19.08466100692749 }
+  ]
+}
+

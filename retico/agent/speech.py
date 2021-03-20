@@ -1,4 +1,5 @@
 import pyaudio
+import wave
 import queue
 from os.path import join
 from os import makedirs
@@ -15,29 +16,6 @@ from retico.modules.amazon.tts import AmazonTTSModule
 from retico.modules.google.tts_new import GoogleTTSModule
 
 from retico.agent.utils import Color as C
-
-
-"""
-The Speech component of the Spoken Dialog System.
-
-Takes a `GeneratedTextIU` and, using tts from google/amazon or similar, produces output audio.
-
-Metrics
--------
-
-* We want to know the text of what we are saying
-* We want to know how many words/time left we have on our current utterance
-    * Which words are completed?
-    * Which words are left?
-
-"""
-
-# TODO
-# Extend AudioDispatcherModule with not only providing `completion` (percentage completed of total utterance) but also
-# include `words_left`, `seconds_left`.
-# This data is given if using amazon tts with `output_word_times=True`.
-# This makes it easier to infer if we should 'allow' interruptions or not. Only using a percentage might fail on
-# long utterances.
 
 
 class DeviceStreamSpeakerModule(AbstractConsumingModule):
@@ -70,15 +48,20 @@ class DeviceStreamSpeakerModule(AbstractConsumingModule):
         """The callback function that gets called by pyaudio."""
         if self.audio_buffer:
             try:
-                audio_paket = self.audio_buffer.get(timeout=self.TIMEOUT)
-                return (audio_paket, pyaudio.paContinue)
+                raw_audio = self.audio_buffer.get(timeout=self.TIMEOUT)
+                # audio_paket = self.audio_buffer.get(timeout=TIMEOUT)
+                # return (audio_paket, pyaudio.paContinue)
             except queue.Empty:
-                pass
-        return (b"\0" * frame_count * self.sample_width, pyaudio.paContinue)
+                raw_audio = b"\0" * frame_count * self.sample_width
+                # pass
+
+        self.wavfile.writeframes(raw_audio)
+        return (raw_audio, pyaudio.paContinue)
 
     def __init__(
         self,
         chunk_size,
+        filename="/tmp/agent_bypass_speaker.wav",
         rate=48000,
         sample_width=2,
         **kwargs,
@@ -92,6 +75,7 @@ class DeviceStreamSpeakerModule(AbstractConsumingModule):
             sample_width (int): The sample width of the audio. Defaults to 2.
         """
         super().__init__(**kwargs)
+        self.filename = filename
         self.chunk_size = chunk_size
         self.rate = rate
         self.sample_width = sample_width
@@ -131,10 +115,15 @@ class DeviceStreamSpeakerModule(AbstractConsumingModule):
             stream_callback=self.callback,
             frames_per_buffer=self.chunk_size,
         )
+        self.wavfile = wave.open(self.filename, "wb")
+        self.wavfile.setframerate(self.rate)
+        self.wavfile.setnchannels(self.CHANNELS)
+        self.wavfile.setsampwidth(self.sample_width)
         self.stream.start_stream()
 
     def shutdown(self):
         """Close the audio stream."""
+        self.wavfile.close()
         self.stream.stop_stream()
         self.stream.close()
         self.stream = None
@@ -159,7 +148,7 @@ class Speech:
         sample_rate,
         bytes_per_sample,
         chunk_size=None,
-        tts_client="google",
+        tts_client="amazon",
         output_word_times=False,
         record=False,
         debug=False,
@@ -179,6 +168,11 @@ class Speech:
         self.bytes_per_sample = bytes_per_sample
         self.record = record
         self.debug = debug
+
+        audio_dir = join(result_dir, "speech")
+        makedirs(audio_dir, exist_ok=True)
+        print("Speech: ", audio_dir)
+        wav_filename = join(audio_dir, "agent_audio.wav")
 
         if tts_client.lower() == "google":
             self.tts = GoogleTTSModule(
@@ -210,26 +204,20 @@ class Speech:
             interrupt=True,
         )
 
-        if self.record:
-            audio_dir = join(result_dir, "speech")
-            makedirs(audio_dir, exist_ok=True)
-            print("Speech: ", audio_dir)
-            wav_filename = join(audio_dir, "agent_audio.wav")
-            self.audio_recorder = AudioRecorderModule(
-                wav_filename, rate=sample_rate, sample_width=bytes_per_sample
-            )
-            self.audio_dispatcher.subscribe(self.audio_recorder)
-
         if bypass:
             self.streaming_speaker = DeviceStreamSpeakerModule(
                 self.chunk_size,
+                filename=wav_filename,
                 rate=sample_rate,
                 sample_width=bytes_per_sample,
                 device_name=device_name,
             )
         else:
             self.streaming_speaker = StreamingSpeakerModule(
-                self.chunk_size, rate=sample_rate, sample_width=bytes_per_sample
+                self.chunk_size,
+                filename=wav_filename,
+                rate=sample_rate,
+                sample_width=bytes_per_sample,
             )
 
         self.tts.subscribe(self.audio_dispatcher)
@@ -254,9 +242,6 @@ class Speech:
         self.audio_dispatcher.setup(**kwargs)
         self.streaming_speaker.setup(**kwargs)
 
-        if self.record:
-            self.audio_recorder.setup(**kwargs)
-
     def run(self, **kwargs):
         self.tts.run(**kwargs)
         self.audio_dispatcher.run(**kwargs)
@@ -264,8 +249,6 @@ class Speech:
         if self.debug:
             self.audio_dispatcher_debug.run(**kwargs)
             self.tts_debug.run(**kwargs)
-        if self.record:
-            self.audio_recorder.run(**kwargs)
 
     def stop(self, **kwargs):
         self.tts.stop(**kwargs)
@@ -274,8 +257,6 @@ class Speech:
         if self.debug:
             self.audio_dispatcher_debug.stop(**kwargs)
             self.tts_debug.stop(**kwargs)
-        if self.record:
-            self.audio_recorder.stop(**kwargs)
 
 
 def test_speech(args):
