@@ -61,6 +61,11 @@ class CNS(AbstractModule):
         self.agent_turn_predicted_on = []
         self.agent_interrupted = []
 
+        self.agent_omitted = []
+
+        # self.agent_cooldown = 0.5
+        # self.agent_last_turn_on = 0
+
         ###################################################################
         # USER
         ###################################################################
@@ -79,6 +84,7 @@ class CNS(AbstractModule):
         self.vad_ipu_active = False
         self.vad_ipu_on = []  # faster ipu vad
         self.vad_ipu_off = []
+        self.vad_ipu_off_time = 0  # slower vad for fallback
         self.vad_turn_active = False
         self.vad_turn_on = []  # slower vad for fallback
         self.vad_turn_off = []  # slower vad for fallback
@@ -98,6 +104,7 @@ class CNS(AbstractModule):
                 self.vad_ipu_on.append(now)
             else:
                 self.vad_ipu_off.append(now)
+                self.vad_ipu_off_time = time.time()
         if event_name == "event_vad_turn_change":
             self.vad_turn_active = data["active"]
             if data["active"]:
@@ -111,8 +118,9 @@ class CNS(AbstractModule):
         output_iu.dispatch = True
         self.append(output_iu)
 
-    def init_agent_turn(self, text):
+    def init_agent_turn(self, text, fallback=False):
         self.agent = AgentState()
+        self.agent_fallback = fallback
         self.agent.planned_utterance = text
         self.agent_turn_active = True
         self.agent_turn_on.append(self.agent.start_time)  # must be after .finalize
@@ -122,10 +130,13 @@ class CNS(AbstractModule):
 
     def finalize_agent(self):
         self.agent_turn_active = False
+        self.agent.finalize()
         if self.agent.utterance != "":
-            self.agent.finalize()
+            print("finalize agent: speech is not done...")
             self.agent_turn_off.append(self.agent.end_time)  # must be after .finalize
             self.memory.update(self.agent, agent=True)
+        else:
+            self.agent_omitted.append(self.agent)
 
     def init_user_turn(self, user_state=None):
         if user_state == None:
@@ -220,8 +231,14 @@ class CNS(AbstractModule):
             state["time"] -= self.start_time
             states.append(state)
 
+        # ommitted
+        omitted_turns = []
+        for turn in self.agent_omitted:
+            turn.norm_time(self.memory.start_time)
+            omitted_turns.append(turn.to_dict())
         data = {
             "turns": turns,
+            "omitted_agent_turns": omitted_turns,
             "vad_ipu_on": list(np.array(self.vad_ipu_on) - self.start_time),
             "vad_ipu_off": list(np.array(self.vad_ipu_off) - self.start_time),
             "vad_turn_on": list(np.array(self.vad_turn_on) - self.start_time),

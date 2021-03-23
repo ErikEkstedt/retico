@@ -46,7 +46,9 @@ else:
 
 if policy == "prediction":
     cmd += " --short_heuristic_cutoff 1"
-    cmd += " --fallback_duration 2"
+    cmd += " --fallback_duration 1.25"
+    cmd += " --vad_ipu_offset .1"
+    cmd += " --trp .4"
 else:
     cmd += " --fallback_duration 10"
 

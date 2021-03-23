@@ -5,10 +5,9 @@ import time
 import flask
 
 
-from retico.agent.analysis.analysis import get_interaction_data
+from retico.agent.utils import read_json
+from retico.agent.analysis.analysis import Analysis, get_interaction_data
 from retico.agent.analysis.turntaking.api_utils import jsonify_data
-
-from retico.agent.analysis.analysis import Analysis
 
 
 global aggregate_data
@@ -30,6 +29,11 @@ makedirs(TMP, exist_ok=True)
 app = flask.Flask(__name__)
 
 
+@app.route("/api/roots", methods=["GET"])
+def root():
+    return {"roots": [ROOT]}
+
+
 @app.route("/api/interactions", methods=["GET"])
 def interactions():
     ret = {"interactions": []}
@@ -42,6 +46,7 @@ def interactions():
 @app.route("/api/audio/<path:interaction>", methods=["GET"])
 def audio(interaction):
     wav_path = join(ROOT, interaction, "dialog.wav")
+    print("wav_path: ", wav_path)
     return flask.send_file(wav_path)
 
 
@@ -84,12 +89,20 @@ def interaction_data(data=None, interaction=None):
         ret = Analysis.tfo(interaction_dir)
         ret["agent"] = ret["agent"].t().tolist()
         ret["user"] = ret["user"].t().tolist()
+    elif data == "fallback":
+        ret = Analysis.fallbacks(interaction_dir)
+    elif data == "omitted_turns":
+        ret = Analysis.get_omitted_turns(interaction_dir)
     elif data == "anno":
         ret = Analysis.annotation(interaction_dir)
     elif data == "turn_opportunity":
         ret = Analysis.agent_possible_onset_events(interaction_dir)
     elif data == "trp_info":
         ret = Analysis.trp_info(interaction_dir)
+    elif data == "hparams":
+        ret = read_json(join(interaction_dir, "hparams.json"))
+    elif data == "responsiveness_and_interruption":
+        ret = Analysis.responsiveness_and_interruption(interaction_dir)
     return ret
 
 

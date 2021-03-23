@@ -1,6 +1,7 @@
 from argparse import ArgumentParser
 from os.path import join, exists, isdir, basename
 from os import listdir
+from glob import glob
 from tqdm import tqdm
 
 import matplotlib.pyplot as plt
@@ -10,8 +11,8 @@ import torch
 from torchaudio.transforms import Resample
 
 
-from retico.agent.analysis.utils import load_interaction
-from retico.agent.utils import write_json, read_json
+from retico.agent.analysis.utils import load_interaction, read_audio
+from retico.agent.utils import read_json
 
 
 POLICIES = ["baseline", "baselinevad", "prediction"]
@@ -35,6 +36,59 @@ class Analysis:
         return {"turns": dialog["turns"]}
 
     @staticmethod
+    def get_omitted_turns(interaction_dir=None, data=None):
+        if data is None:
+            data = load_interaction(interaction_dir)
+        dialog = data["dialog"]
+        omitted_turns = []
+        if "omitted_agent_turns" in dialog:
+            for turn in dialog["omitted_agent_turns"]:
+                turn["diff"] = turn["end_time"] - turn["start_time"]
+                omitted_turns.append(turn)
+        return {"omitted_turns": omitted_turns}
+
+    @staticmethod
+    def fallbacks(interaction_dir=None, data=None):
+        if data is None:
+            data = load_interaction(interaction_dir)
+
+        dialog = data["dialog"]
+        fallbacks = []
+        for turn in dialog["turns"]:
+            if "fallback" in turn:
+                if turn["fallback"]:
+                    fallbacks.append(turn["end_time"])
+        return {"fallbacks": fallbacks}
+
+    @staticmethod
+    def responsiveness_and_interruption(interaction_dir=None, data=None, p_time=0.2):
+        if data is None:
+            data = load_interaction(interaction_dir)
+        dialog = data["dialog"]
+        pause_duration, shift_duration = get_interval_durations(dialog)
+        interruptions = get_interruptions(data=data)
+
+        N = len(pause_duration) + len(shift_duration)
+        target_err = interruptions / N
+        target_time = torch.tensor(shift_duration).mean().item()
+        target_time_med = torch.tensor(shift_duration).median().item()
+
+        p = torch.tensor(pause_duration)
+        p2 = p[p >= p_time]
+        N2 = p2.nelement() + len(shift_duration)
+        te2 = interruptions / N2
+        return {
+            "interruptions": interruptions,
+            "pauses": pause_duration,
+            "shifts": shift_duration,
+            "error": target_err,
+            "time_mean": target_time,
+            "time_median": target_time_med,
+            f"error_over_{int(p_time*1000)}": te2,
+            "Np": N2,
+        }
+
+    @staticmethod
     def trp_info(interaction_dir=None, data=None):
         if data is None:
             data = load_interaction(interaction_dir)
@@ -54,12 +108,16 @@ class Analysis:
                     for trp in turn["all_trps"]:
                         all_trps.append(trp["trp"])
         r = round(agent_aborted / n_agent_realized_turns, 2)
+
+        omitted_turns = Analysis.get_omitted_turns(data=data)
+
         return {
             "trp": all_trps,
             "user_turns": n_user_turns,
             "agent_turns": n_agent_realized_turns,
             "agent_aborted": agent_aborted,
             "agent_abort_ratio": r,
+            "omitted_turns": omitted_turns["omitted_turns"],
         }
 
     @staticmethod
@@ -170,12 +228,10 @@ def get_interaction_data(interaction_dir, include_audio=False, include_dialog=Fa
             "off": data["dialog"]["vad_ipu_off"],
         },
         "asr": {"on": data["dialog"]["asr_on"], "off": data["dialog"]["asr_off"]},
-        "tfo": {
-            "agent": find_agent_offsets(data["dialog"]),
-            "user": find_user_offsets(data["dialog"]),
-        },
+        "tfo": Analysis.tfo(data=data),
         "trp": [],
         "interruption": [],
+        "fallback": Analysis.fallbacks(data=data)["fallbacks"],
         "turn_starts": {
             "agent": [],
             "user": [],
@@ -299,8 +355,10 @@ def find_agent_offsets(dialog):
         if name == "agent" and dialog["turns"][i + 1] != "agent":
             if not turn["interrupted"]:
                 agent_start = turn["start_time"]
-                user_end = ipu_off[ipu_off < agent_start][-1]
-                offsets.append([user_end, agent_start, agent_start - user_end])
+                user_end = ipu_off[ipu_off < agent_start]
+                if len(user_end) > 0:
+                    user_end = user_end[-1]
+                    offsets.append([user_end, agent_start, agent_start - user_end])
     offsets = torch.tensor(offsets)  # N, 3
     return offsets
 
@@ -313,8 +371,10 @@ def find_user_offsets(dialog):
         if name == "agent" and dialog["turns"][i + 1] != "agent":
             if not turn["interrupted"]:
                 agent_end = turn["end_time"]
-                user_start = ipu_on[ipu_on > agent_end][0]
-                offsets.append([agent_end, user_start, user_start - agent_end])
+                user_start = ipu_on[ipu_on > agent_end]
+                if len(user_start) > 0:
+                    user_start = user_start[0]
+                    offsets.append([agent_end, user_start, user_start - agent_end])
     offsets = torch.tensor(offsets)  # N, 2
     return offsets
 
@@ -566,6 +626,7 @@ def plot_pauses(
     target_time=None,
     baseline_err=None,
     baseline_time=None,
+    target_time_offset=0,
     plot=True,
 ):
     N = 0
@@ -659,6 +720,28 @@ def plot_pauses(
             color="r",
             linewidth=1,
         )
+        ax[-1].scatter(
+            target_time + target_time_offset,
+            target_err,
+            label=f"prediction + audio-silence ({round(target_time,2)+target_time_offset}, {round(target_err,2)})",
+            color="#ff7f0e",
+        )
+        ax[-1].hlines(
+            target_err,
+            xmin=0,
+            xmax=target_time + target_time_offset,
+            linestyle="dashed",
+            color="r",
+            linewidth=0.5,
+        )
+        ax[-1].vlines(
+            target_time + target_time_offset,
+            ymin=0,
+            ymax=target_err,
+            linestyle="dashed",
+            color="r",
+            linewidth=0.5,
+        )
 
     if baseline_err is not None and baseline_time is not None:
         ax[-1].scatter(
@@ -725,6 +808,18 @@ def get_interval_durations(dialog):
             else:
                 shift_duration.append((next_agent - v).item())
     return pause_duration, shift_duration
+
+
+def get_interruptions(interaction_dir=None, data=None):
+    if data is None:
+        data = load_interaction(interaction_dir)
+    dialog = data["dialog"]
+    interruptions = 0
+    for turn in dialog["turns"]:
+        if "interrupted" in turn:
+            if turn["interrupted"]:
+                interruptions += 1
+    return interruptions
 
 
 def interruption_time_data(root):
@@ -804,6 +899,9 @@ def audio_diff(interaction_dir=None, data=None, thresh=0.04, plot=False):
         data = load_interaction(interaction_dir)
 
     dialog = data["dialog"]
+    sr = data["audio"]["sample_rate"]
+    waveform = data["audio"]["waveform"]
+
     lookahead = t2s(1, sr)  # lookahead samples
 
     if plot:
@@ -859,18 +957,35 @@ def experiment_audio_diff(experiment_dir):
     plt.pause(0.01)
 
 
+def audio_diff_from_audio_files(root="/home/erik/.cache/agent/tts", thresh=0.05):
+    def s2t(s, sr):
+        return round(s / sr, 3)
+
+    diffs = []
+    for wavpath in glob(join(root, "*.wav")):
+        d = read_audio(wavpath)
+        w = torch.where(d["waveform"][0] > thresh)[0]
+        if len(w) > 0:
+            w = w[0].item()
+            time = s2t(w, d["sample_rate"])
+            diffs.append(time)
+    diffs = torch.tensor(diffs)
+    return {"mean": round(diffs.mean().item(), 3), "std": round(diffs.std().item(), 3)}
+
+
 def single():
     # Experiment (multiple sessions)
     # experiment_dir = "/home/erik/projects/retico/retico/agent/data/experiment_test"
     # experiment_dir = "/home/erik/Experiments"
-
     experiment_dir = "/home/erik/ExperimentPreStudy"
     experiment = get_experiment_data(experiment_dir)
 
-    curve = interruption_time_data(experiment_dir)
     fig, ax = plot_experiment_tfo(experiment)
     fig2, ax2 = plot_experiment_grades(experiment)
     fig3, ax3 = plot_experiment_anno(experiment)
+
+    curve = interruption_time_data(experiment_dir)
+
     fig4, ax4 = plot_pauses(
         pauses=curve["baseline"]["pauses"],
         shifts=curve["baseline"]["shifts"],
@@ -881,6 +996,7 @@ def single():
         target_err=curve["prediction"]["err"],
         baseline_time=curve["baseline"]["time"],
         baseline_err=curve["baseline"]["err"],
+        target_time_offset=0.25,
     )
 
     # N_tfo = experiment["prediction"]["tfo"]["agent"].shape[0]
@@ -911,11 +1027,20 @@ def single():
     avg_diff = torch.tensor(adiff).mean().item()
     print("avg diff: ", avg_diff)
 
-    experiment_dir = "/home/erik/ExperimentPreStudy"
+    # experiment_dir = "/home/erik/ExperimentPreStudy"
+    experiment_dir = "/home/erik/Experiments2/hej"
     experiment_audio_diff(experiment_dir)
 
     data = get_interaction_data(interaction_dir)
     print(data.keys())
+
+    diff = audio_diff_from_audio_files()
+
+    interaction_dir = "/home/erik/ExperimentsDebug/session_4/prediction"
+
+    res = responsiveness_and_interruption(interaction_dir, p_time=0.4)
+
+    print(len(res["pauses"]) + len(res["shifts"]))
 
 
 if __name__ == "__main__":

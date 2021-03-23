@@ -5,12 +5,15 @@ import Dialog from './Dialog'
 import Annotation from './Annotation'
 import ChatAgent from './ChatAgent'
 import Global from './Global';
+import Aggregate from './Aggregate'
 
-import './App.css';
 import 'bootstrap/dist/css/bootstrap.min.css';
 
 
+const rootURL = "/api/roots";
+// thses endpoints have stupid names
 const interactionsURL = "/api/interactions";
+const interactionURL = "/api/interaction";
 
 
 const Navigation = (props) => {
@@ -20,8 +23,15 @@ const Navigation = (props) => {
     return <NavDropdown.Item eventKey={s} key={i}> {s} </NavDropdown.Item>
   })
 
+  const rootItems = props.roots.map((s, i) => {
+    return <NavDropdown.Item eventKey={s} key={i}> {s} </NavDropdown.Item>
+  })
+
+	console.log(props.currentRoot)
+
+  let styles = {'background': '#eaeaea'}
   return (
-    <Navbar expand="sm">
+    <Navbar expand="sm" style={styles}>
       <Navbar.Collapse id="basic-navbar-nav">
         <Tabs
           activeKey={key}
@@ -33,16 +43,31 @@ const Navigation = (props) => {
         >
           <Tab eventKey='dialog' title="Dialog" />
           <Tab eventKey='global' title="Global" />
+          <Tab eventKey='aggregate' title="Aggregate" />
           <Tab eventKey='annotation' title="Annotation" />
           <Tab eventKey='chatagent' title="Chat" />
+          <Tab eventKey='hparams' title="Hparams" />
         </Tabs >
+        <Nav 
+          activeKey={props.activeRootKey} 
+          // onSelect={(key) => props.onChangeInteraction(key)} 
+          className="justify-content-end"
+         >
+          <NavDropdown 
+            title={props.currentRoot}
+            size="sm"
+            drop='left'
+          >
+            {rootItems}
+          </NavDropdown>
+        </Nav>
         <Nav 
           activeKey={props.activeKey} 
           onSelect={(key) => props.onChangeInteraction(key)} 
           className="justify-content-end"
          >
           <NavDropdown 
-            title="Interactions" 
+            title={props.currentInteraction}
             size="sm"
             drop='left'
           >
@@ -55,6 +80,38 @@ const Navigation = (props) => {
 };
 
 
+class Hparams extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { 
+      hparams: null
+    };
+  }
+  componentDidMount() {
+    fetch(interactionURL+'/hparams/'+this.props.interaction).then(response => response.json()).then((data) => {
+      this.setState({'hparams': data})
+    })
+  }
+
+  getHparams() {
+    if (this.state.hparams === null){
+      return
+    }
+    console.log(this.state.hparams)
+    let hparams = Object.entries(this.state.hparams).map((value,i) => {
+      return <li key={value}> {value[0]}: {value[1]}</li>
+    })
+    return hparams;
+  }
+  render () {
+    const hparams = this.getHparams();
+    return (
+      <ul> {hparams} </ul>
+    );
+  }
+}
+
+
 export default class Interaction extends Component {
   constructor(props) {
     super(props);
@@ -62,7 +119,11 @@ export default class Interaction extends Component {
       content: 'dialog',
       interaction: "",
       interactions: [],
+			root: "",
+			roots: [],
+      hparams: null,
       activeKeyDropdown: 0,
+      activeRootKeyDropdown: 0,
     };
     this.onChangeContent=this.onChangeContent.bind(this)
     this.onChangeInteraction=this.onChangeInteraction.bind(this)
@@ -73,6 +134,13 @@ export default class Interaction extends Component {
       this.setState({
         interactions: data.interactions,
         interaction: data.interactions[0],
+      })
+    })
+    fetch(rootURL).then(response => response.json()).then((data) => {
+			console.log(data);
+      this.setState({
+        roots: data.roots,
+        root: data.roots[0],
       })
     })
   }
@@ -96,6 +164,10 @@ export default class Interaction extends Component {
       content = <Annotation />
     } else if (this.state.content === 'chatagent') {
       content = <ChatAgent />
+    } else if (this.state.content === 'hparams') {
+      content = <Hparams interaction={this.state.interaction} key='hparams'/>
+    } else if (this.state.content === 'aggregate') {
+      content = <Aggregate />
     } else {
       content = <Dialog interaction={this.state.interaction} key={this.state.interaction}/>
     }
@@ -109,10 +181,13 @@ export default class Interaction extends Component {
         <Navigation 
           onChangeContent={this.onChangeContent} 
           onChangeInteraction={this.onChangeInteraction} 
-          interactions={this.state.interactions} 
           activeKey={this.state.activeKeyDropdown}
+          interactions={this.state.interactions} 
+          currentInteraction={this.state.interaction}
+          activeRootKey={this.state.activeRootKeyDropdown}
+          roots={this.state.roots} 
+          currentRoot={this.state.root}
         /> 
-        <h4>{this.state.interaction}</h4>
         { this.getContent() }
       </div>
     );

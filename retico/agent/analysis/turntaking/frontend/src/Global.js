@@ -46,9 +46,12 @@ export default class TurnTaking extends Component {
     super(props);
     this.state = { 
       tfo: null,
+      fallback: null,
+      omittedTurns: null,
       anno: null,
       turnOpportunity: null,
       trpInfo: null,
+      responsivenessInterruption: null,
       interaction: props.interaction,
     };
   }
@@ -56,6 +59,14 @@ export default class TurnTaking extends Component {
   componentDidMount() {
     fetch(baseUrl+'/tfo/'+this.state.interaction).then(response => response.json()).then((data) => {
       this.setState({tfo: data})
+    });
+
+    fetch(baseUrl+'/fallback/'+this.state.interaction).then(response => response.json()).then((data) => {
+      this.setState({fallback: data.fallbacks})
+    });
+
+    fetch(baseUrl+'/omitted_turns/'+this.state.interaction).then(response => response.json()).then((data) => {
+      this.setState({omittedTurns: data.omitted_turns})
     });
 
     fetch(baseUrl+'/anno/'+this.state.interaction).then(response => response.json()).then((data) => {
@@ -69,6 +80,10 @@ export default class TurnTaking extends Component {
     fetch(baseUrl+'/trp_info/'+this.state.interaction).then(response => response.json()).then((data) => {
       this.setState({trpInfo: data})
     });
+
+    fetch(baseUrl+'/responsiveness_and_interruption/'+this.state.interaction).then(response => response.json()).then((data) => {
+      this.setState({responsivenessInterruption: data})
+    });
   }
 
   getTRPInfo() {
@@ -76,13 +91,29 @@ export default class TurnTaking extends Component {
       return 
     }
 
+    const n_fallbacks = (this.state.fallback === null) ? 0 : this.state.fallback.length;
+    const n_omitted = (this.state.omittedTurns === null) ? 0 : this.state.omittedTurns.length;
+
+    let resp = 0 
+    if (this.state.responsivenessInterruption !== null){
+      resp =  + ", Intrr: " + this.state.responsivenessInterruption.error
+      resp = <div>
+        <p>Resp mean: {this.state.responsivenessInterruption.time_mean} </p>
+        <p>Resp median: {this.state.responsivenessInterruption.time_median} </p>
+        <p>Intrr: {this.state.responsivenessInterruption.error} </p>
+        </div>
+    }
+
     return (
       <Container>
         <ListGroup>
           <ListGroup.Item>User turns: {this.state.trpInfo.user_turns} </ListGroup.Item>
           <ListGroup.Item>N trp: {this.state.trpInfo.trp.length}</ListGroup.Item>
+          <ListGroup.Item>N fallbacks: {Math.round(n_fallbacks*100/this.state.trpInfo.user_turns)}% ({n_fallbacks})</ListGroup.Item>
           <ListGroup.Item>Agent turns: {this.state.trpInfo.agent_turns}</ListGroup.Item>
-          <ListGroup.Item>Agent aborted: {this.state.trpInfo.agent_abort_ratio}% ({this.state.trpInfo.agent_aborted})</ListGroup.Item>
+          <ListGroup.Item>Interruptions: {this.state.trpInfo.agent_abort_ratio*100}% ({this.state.trpInfo.agent_aborted}). Interrupted agent turns where speech was emitted.</ListGroup.Item>
+          <ListGroup.Item>Agent omitted: {n_omitted}. Turns without speech are omitted from the dialog (they never happened). </ListGroup.Item>
+          <ListGroup.Item>{resp}</ListGroup.Item>
         </ListGroup>
         <hr/>
         <h2>TRP</h2>
@@ -108,8 +139,8 @@ export default class TurnTaking extends Component {
         <p>Turn-Floor-Offset: the duration of silence prior a turn. </p>
         <Plot
           data={[
-            {x: this.state.tfo.agent[2], type: 'histogram', histnorm: 'probability', name: 'agent', nbinsx: '10'},
-            {x: this.state.tfo.user[2], type: 'histogram', histnorm: 'probability', name: 'user', nbinsx: '10'},
+            {x: this.state.tfo.agent[2], type: 'histogram', histnorm: 'probability', name: 'agent', nbinsx: '20'},
+            {x: this.state.tfo.user[2], type: 'histogram', histnorm: 'probability', name: 'user', nbinsx: '20'},
           ]}
           layout= {{xaxis: {title: 'time (s)'}, yaxis: {title: '%'}}}
         />

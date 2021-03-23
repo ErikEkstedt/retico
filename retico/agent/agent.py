@@ -34,6 +34,7 @@ class Agent:
         bytes_per_sample=2,
         speech_chunk_time=0.05,
         speech_sample_rate=48000,
+        vad_ipu_offset=0.2,
         fallback_duration=2,
         backchannel_prob=0.5,
         trp=0.1,
@@ -97,9 +98,9 @@ class Agent:
             chunk_time=chunk_time,
             onset_time=0.15,
             turn_offset=0.75,
-            ipu_offset=0.2,
+            ipu_offset=vad_ipu_offset,
             fast_offset=0.1,
-            prob_thresh=0.9,
+            prob_thresh=0.95,
         )
         self.cns = CNS(verbose=verbose)
 
@@ -132,6 +133,7 @@ class Agent:
         # Frontal cortex policy / turn-taking / spoken-dialog-controler
         if policy == "prediction":
             print("Policy: PREDICTION")
+            print(f"TRP: {trp}")
             self.fcortex = FC_Predict(
                 dm=self.dm,
                 central_nervous_system=self.cns,
@@ -215,6 +217,7 @@ class Agent:
         parser.add_argument("--sample_rate", type=int, default=48000)
         parser.add_argument("--speech_chunk_time", type=float, default=0.1)
         parser.add_argument("--speech_sample_rate", type=int, default=48000)
+        parser.add_argument("--vad_ipu_offset", type=float, default=0.2)
         parser.add_argument("--bytes_per_sample", type=int, default=2)
         parser.add_argument("--trp", type=float, default=0.1)
         parser.add_argument("--fallback_duration", type=float, default=2)
@@ -231,16 +234,15 @@ class Agent:
         self.fcortex.start_loop()
 
         input("DIALOG\n")
+        self.fcortex.dialog_ended = True
 
         self.hearing.stop()
         self.speech.stop()
-        # self.speech.tts.shutdown()
         self.vad.stop()
         self.cns.stop()
         self.cns.save(join(self.session_dir, "dialog.json"))
         self.join_audio()
         self.hearing.asr.active = False
-        self.fcortex.dialog_ended = True
 
 
 if __name__ == "__main__":
@@ -263,6 +265,7 @@ if __name__ == "__main__":
         bytes_per_sample=args.bytes_per_sample,
         speech_chunk_time=args.speech_chunk_time,
         speech_sample_rate=args.speech_sample_rate,
+        vad_ipu_offset=args.vad_ipu_offset,
         fallback_duration=args.fallback_duration,
         backchannel_prob=args.backchannel_prob,
         trp=args.trp,

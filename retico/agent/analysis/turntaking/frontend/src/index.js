@@ -14,11 +14,10 @@ import './index.css';
 
 const Navigation = (props) => {
   return (
-    <Navbar bg="dark" expand="sm" variant="dark">
+    <Navbar bg="dark" expand="sm" variant="dark" >
       <Navbar.Brand href="/">TurnTaking</Navbar.Brand>
       <Nav className="mr-auto">
-        <Nav.Link href="/Interaction">Interaction</Nav.Link>
-        <Nav.Link href="/Aggregate">Aggregate</Nav.Link>
+        <Nav.Link href="/Interaction">Interactions</Nav.Link>
         <Nav.Link href="/Information">Information</Nav.Link>
       </Nav>
     </Navbar>
@@ -28,14 +27,40 @@ const Navigation = (props) => {
 const Home = (props) => {
   return (
     <div>
-      <h1>TODO</h1>
+      <h1>UI</h1>
       <ol>
-        <li> Switch dialog file </li>
-        <li> Global dialog stats </li>
-        <li> Global root stats </li>
-        <li> Fix dialog turn audio </li>
-        <li> Add information as needed </li>
+        <li> Aggregation </li>
+				<ol>
+					<li> Switch root directory. Upper navigation? </li>
+				</ol>
+        <li> Interaction Turns </li>
+				<ol>
+					<li> turn audio waveform </li>
+					<li> Show total trp for each token on last recognized utterance </li>
+				</ol>
       </ol>
+      <h1>System</h1>
+			<ol>
+        <li>Baseline agent-turn-end correct but prediction isnt?</li>
+				<li>Timestamps on recognized words</li>
+				<li>Custom ASR. </li>
+				<li>Custom TTS. Eva etc</li>
+			</ol>
+      <h1>Bots</h1>
+			<ol>
+				<li>LMBot/BlenderBot</li>
+				<li>Repeat Bot</li>
+				<ol>
+					<li>User actual audio</li>
+					<li>User words with TTS</li>
+				</ol>
+				<li>Yes/No Bot</li>
+				<ol>
+					<li>ASR final time is quick yes resonses and no responses gets an added wait time.</li>
+					<li>Short static baseline suitable for single utterance yes and no game.</li>
+				</ol>
+				<li>Eliza Bot</li>
+			</ol>
     </div>
   );
 };
@@ -47,7 +72,6 @@ const routes = (
       <Switch >
         <Route exact path="/" component={Home} />
         <Route path="/Interaction" component={Interaction} />
-        <Route path="/Aggregate" component={Aggregate} />
         <Route path="/Information" component={Information} />
       </Switch >
     </div>

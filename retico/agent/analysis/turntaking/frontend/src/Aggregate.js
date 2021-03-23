@@ -4,18 +4,6 @@ import Plot from 'react-plotly.js';
 
 const baseUrl = "/api/aggregate"
 
-const Navigation = (props) => {
-
-  return (
-    <Navbar expand="sm"> 
-      <Navbar.Brand >Aggregate</Navbar.Brand>
-      <Form inline>
-        <FormControl type="text" placeholder="Search" className="mr-sm-2" />
-      </Form>
-    </Navbar>
-  );
-}
-
 export default class Aggregate extends Component {
   constructor(props) {
     super(props);
@@ -152,19 +140,16 @@ export default class Aggregate extends Component {
     const grades = this.getGrades();
     const anno = this.getAnnotation();
     return (
-      <div>
-        <Navigation />
-        <Container >
-          <Col>
-            <h3>TFO</h3>
-            {tfo}
-            <h3>Grades</h3>
-            {grades}
-            <h3>Anno</h3>
-            {anno}
-          </Col>
-        </Container >
-      </div>
+      <Container fluid style={{background: '#778ca3', textAlign: 'center'}}>
+        <Col>
+          <h3>TFO</h3>
+          {tfo}
+          <h3>Grades</h3>
+          {grades}
+          <h3>Anno</h3>
+          {anno}
+        </Col>
+      </Container >
     );
   }
 }

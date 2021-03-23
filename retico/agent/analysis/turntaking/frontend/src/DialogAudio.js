@@ -4,9 +4,11 @@ import RegionPlugin from "wavesurfer.js/dist/plugin/wavesurfer.regions.min.js";
 import TimelinePlugin from "wavesurfer.js/dist/plugin/wavesurfer.timeline.min.js";
 
 import { Container, Row, Col } from 'react-bootstrap';
+import './App.css';
 
 const audioURL = "/api/audio";
 const dialogURL = "/api/dialog";
+const interactionURL = "/api/interaction"
 
 
 export default class DialogAudio extends Component {
@@ -14,6 +16,7 @@ export default class DialogAudio extends Component {
     super(props);
     this.state = {
       dialogData: null,
+      hparams: null,
       name: "agent",
       channels: props.channels,
       id: props.id,
@@ -24,6 +27,7 @@ export default class DialogAudio extends Component {
       showTurnStart: false,
       showTurnEnd: false,
       showInterrupt: false,
+      showFallback: false,
       showDialogStates: false,
       showAgentTurn: false,
       playPauseButtonId: 'pause',
@@ -64,6 +68,12 @@ export default class DialogAudio extends Component {
     if (this.props.interaction !== ""){
       this.waveform.load(audioURL+"/"+this.props.interaction);
       this.waveform.zoom(this.state.zoom);
+      fetch(interactionURL+'/hparams/'+this.props.interaction).then(response => response.json()).then((data) => {
+        console.log('hparams: ', data)
+        this.setState({
+          hparams: data,
+        })
+      })
       fetch(dialogURL+'/'+this.props.interaction).then(response => response.json()).then((data) => {
         this.setState({
           dialogData: true,
@@ -71,6 +81,7 @@ export default class DialogAudio extends Component {
           asr: data.asr,
           tfo: data.tfo,
           trp: data.trp,
+          fallback: data.fallback,
           interruption: data.interruption,
           turn_starts: data.turn_starts,
           turn_ends: data.turn_ends,
@@ -127,14 +138,18 @@ export default class DialogAudio extends Component {
   };
 
   drawLine (start, color, id, width) {
-    this.waveform.addRegion({
-      start: start,
-      end: start+width,
-      color: color,
-      drag: false,
-      resize: false,
-      id: id
-    })
+    if (start >= 0 ) {
+      this.waveform.addRegion({
+        start: start,
+        end: start+width,
+        color: color,
+        drag: false,
+        resize: false,
+        id: id
+      })
+    } else {
+      console.log('start line: ' + start);
+    }
   }
 
   drawLines(arr, color, id, width=0.05) {
@@ -186,10 +201,10 @@ export default class DialogAudio extends Component {
       let n = 0;
       this.state.trp.forEach((trp, time) => {
         let color = "#00aa00";
-        if (trp.trp < .2) {
+        if (trp.trp < this.state.hparams.trp) {
           color = "#aa0000"
         }
-        this.drawLine(trp.time, color, 'trp' + n.toString(), 0.05);
+        this.drawLine(trp.time, color, 'trp' + n.toString(), 0.03);
         n ++;
       })
     }
@@ -205,6 +220,19 @@ export default class DialogAudio extends Component {
     } else {
       this.drawLines(this.state.interruption, "#eba01b50", 'Interrupt', .2)
       this.setState({showInterrupt: true})
+    };
+  }
+  toggleFallback() {
+    console.log('ToggleFallback')
+    if (this.state.dialogData === null) {
+      return;
+    }
+    if (this.state.showFallback) {
+      this.removeRegion('fallback')
+      this.setState({showFallback: false})
+    } else {
+      this.drawLines(this.state.fallback, "#ab005050", 'fallback', .2)
+      this.setState({showFallback: true})
     };
   }
   toggleTFO() {
@@ -232,8 +260,8 @@ export default class DialogAudio extends Component {
       this.removeRegion('turnstarts-user')
       this.setState({showTurnStart: false})
     } else {
-      this.drawLines(this.state.turn_starts.agent, this.state.colorAgent.audio, 'turnstarts-agent', .02)
-      this.drawLines(this.state.turn_starts.user, this.state.colorUser.audio, 'turnstarts-user', .02)
+      this.drawLines(this.state.turn_starts.agent, '#000000', 'turnstarts-agent', .02)
+      this.drawLines(this.state.turn_starts.user, '#000000', 'turnstarts-user', .02)
       this.setState({showTurnStart: true})
     };
   }
@@ -255,8 +283,7 @@ export default class DialogAudio extends Component {
 
   render() {
     return (
-      <Container fluid className="dialog">
-        <div className="media-container">
+      <Container fluid style={{background: '#eaeaea'}}>
           <div id={"wave-timeline-"+this.state.id}></div>
           <div id={"audioplayer-"+this.state.id}></div>
           <Row className="controls" style={{padding: '20px'}}>
@@ -279,7 +306,11 @@ export default class DialogAudio extends Component {
                   Interrupt
                 </label>
                 <label className='checkbox-label'>
-                  <input type="checkbox" value="showInterrupt" checked={this.state.showTFO} onChange={e => this.toggleTFO()}/>
+                  <input type="checkbox" value="showFallback" checked={this.state.showFallback} onChange={e => this.toggleFallback()}/>
+                  Fallback
+                </label>
+                <label className='checkbox-label'>
+                  <input type="checkbox" value="showTFO" checked={this.state.showTFO} onChange={e => this.toggleTFO()}/>
                   TFO
                 </label>
               </Row>
@@ -303,7 +334,6 @@ export default class DialogAudio extends Component {
               </div>
             </Col>
           </Row>
-        </div>
       </Container>
     );
   }

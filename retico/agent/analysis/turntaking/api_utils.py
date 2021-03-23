@@ -62,11 +62,12 @@ def get_turn(
 
 def jsonify_data(interaction):
     for name, tfo in interaction["tfo"].items():
-        interaction["tfo"][name] = {
-            "starts": tfo[:, 0].tolist(),
-            "ends": tfo[:, 1].tolist(),
-            "duration": tfo[:, 2].tolist(),
-        }
+        if len(tfo) > 0:
+            interaction["tfo"][name] = {
+                "starts": tfo[:, 0].tolist(),
+                "ends": tfo[:, 1].tolist(),
+                "duration": tfo[:, 2].tolist(),
+            }
     return interaction
 
 

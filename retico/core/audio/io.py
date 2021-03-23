@@ -401,6 +401,7 @@ class AudioDispatcherModule(abstract.AbstractModule):
             # Loop over all frames (frame-sized chunks of data) in the input IU
             # and add them to the buffer to be dispatched by the
             # _dispatch_audio_loop
+            print("---- dispatch!")
             add_completed_words = False
             if hasattr(input_iu, "words") and hasattr(input_iu, "ends"):
                 rel_starts = np.array(input_iu.starts) / input_iu.duration

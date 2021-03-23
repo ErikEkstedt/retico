@@ -25,7 +25,7 @@ We randomize the sessions by first chosing the largest uniform configurations th
 sessions are drawn randomly from the possible sessions.
 """
 
-SESSIONS = [
+SESSIONS3 = [
     [("A", "X"), ("B", "Y"), ("C", "Z")],
     [("A", "X"), ("B", "Z"), ("C", "Y")],
     [("A", "Y"), ("B", "Z"), ("C", "X")],
@@ -33,23 +33,31 @@ SESSIONS = [
     [("A", "Z"), ("B", "X"), ("C", "Y")],
     [("A", "Z"), ("B", "Y"), ("C", "X")],
 ]
-N_EQUAL = len(SESSIONS)
+policies3 = {"X": "baseline", "Y": "baselineVad", "Z": "prediction"}
+dialogs3 = {"A": "travel_a", "B": "travel_b", "C": "travel_c"}
 
-policies = {"X": "baseline", "Y": "baselineVad", "Z": "prediction"}
-dialogs = {"A": "travel_a", "B": "travel_b", "C": "travel_c"}
+SESSIONS2 = [
+    [("A", "X"), ("B", "Y")],
+    [("A", "Y"), ("B", "X")],
+]
+policies2 = {"X": "baseline", "Y": "prediction"}
+dialogs2 = {"A": "travel_a", "B": "travel_b"}
 
 
-def sample_sessions(N):
-    n = N // N_EQUAL  # uniform
-    r = N % N_EQUAL  # remainder
-    experiments = SESSIONS * n
+def sample_sessions(N, sessions=None):
+    n_equal = len(sessions)
+    n = N // n_equal  # uniform
+    r = N % n_equal  # remainder
+    experiments = sessions * n
     for i in list(choice(range(r), size=r, replace=False)):
-        experiments.append(SESSIONS[i])
+        experiments.append(sessions[i])
     return experiments
 
 
-def sample_experiment(N, shuffle_session_order=True, shuffle_interaction_order=True):
-    experiment = sample_sessions(N)
+def sample_experiment(
+    N, sessions=None, shuffle_session_order=True, shuffle_interaction_order=True
+):
+    experiment = sample_sessions(N, sessions)
     if shuffle_session_order:
         random.shuffle(experiment)
 
@@ -96,7 +104,7 @@ def sanity_check(experiment):
         print(f"{p}: {count}")
 
 
-def to_named(experiment):
+def to_named(experiment, dialogs, policies):
     named_experiment = []
     for session in experiment:
         named_experiment.append(
@@ -106,14 +114,22 @@ def to_named(experiment):
 
 
 def try_it():
-    N = 17
-    experiment = sample_experiment(N)
+    N = 18
+    experiment = sample_experiment(N, sessions=SESSIONS3)
     sanity_check(experiment)
-
-    experiment = to_named(experiment)
+    experiment = to_named(experiment, dialogs3, policies3)
     sanity_check(experiment)
 
     filename = "/tmp/experiment.json"
+    write_json(experiment, filename)
+
+    N = 18
+    experiment = sample_experiment(N, sessions=SESSIONS2)
+    sanity_check(experiment)
+    experiment = to_named(experiment, dialogs2, policies2)
+    sanity_check(experiment)
+
+    filename = "./experiment/experiment2.json"
     write_json(experiment, filename)
 
 
@@ -138,11 +154,11 @@ if __name__ == "__main__":
     args = parser.parse_args()
     print(args)
 
-    experiment = sample_experiment(args.n_participants)
+    experiment = sample_experiment(args.n_participants, sessions=SESSIONS2)
     sanity_check(experiment)
 
     if not args.not_named:
-        experiment = to_named(experiment)
+        experiment = to_named(experiment, dialogs=dialogs2, policies=policies2)
         print("\n" + "=" * 70)
         sanity_check(experiment)
 
