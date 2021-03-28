@@ -2,7 +2,7 @@ import React, { Component } from "react";
 import WaveSurfer from "wavesurfer.js";
 
 
-export default class Audio extends Component {
+export default class Features extends Component {
   constructor(props) {
     super(props);
     this.state = {
@@ -18,7 +18,6 @@ export default class Audio extends Component {
       backend: "MediaElement",
       mediaControls: true,
       backgroundColor: this.state.color,
-      // progressColor: this.props.progressColor,
       scrollParent: true,
     });
     this.waveform.load(this.props.audioURL);

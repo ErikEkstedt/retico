@@ -1,155 +1,187 @@
 import React, { Component } from "react";
-import {Container, Col, Navbar, Form, FormControl} from 'react-bootstrap';
-import Plot from 'react-plotly.js';
+import { Container, Row, Col } from "react-bootstrap";
+import Plot from "react-plotly.js";
 
-const baseUrl = "/api/aggregate"
+const baseUrl = "/api/aggregate";
 
 export default class Aggregate extends Component {
-  constructor(props) {
-    super(props);
-    this.state = { 
-      stats: null,
-      tfoBins: 10,
-      tfoBinSize: .1,
-      tfoBinEnd: 2.1,
-    };
-  }
+	constructor(props) {
+		super(props);
+		this.state = {
+			stats: null,
+			root: props.root,
+			tfoBins: 10,
+			tfoBinSize: 0.1,
+			tfoBinEnd: 3.1,
+		};
+	}
 
-  componentDidMount() {
-    fetch(baseUrl+'/stats').then(response => response.json()).then((data) => {
-      this.setState({stats: data})
-    });
-  }
+	componentDidMount() {
+		// fetch(baseUrl+'/stats').then(response => response.json()).then((data) => {
+		//   this.setState({stats: data})
+		// });
+		fetch(baseUrl + "/" + this.state.root)
+			.then((response) => response.json())
+			.then((data) => {
+				this.setState({ stats: data });
+			});
+	}
 
-  getTFO() {
-    if (this.state.stats === null) {
-      return
-    }
+	getTFO() {
+		if (this.state.stats === null) {
+			return;
+		}
 
-    return (
-      <Plot
-        data={[{
-          x: this.state.stats.baseline.tfo.agent.duration, 
-            type: 'histogram', 
-            histnorm: 'probability', 
-            name: 'baseline', 
-            xbins: { 
-              end: this.state.tfoBinEnd,
-              size: this.state.tfoBinSize,
-              start: 0,
-            }
-        },
-          {
-            x: this.state.stats.baselinevad.tfo.agent.duration, 
-            type: 'histogram', 
-            histnorm: 'probability', 
-            name: 'baselinevad', 
-            xbins: { 
-              end: this.state.tfoBinEnd,
-              size: this.state.tfoBinSize,
-              start: 0,
-            }
-          },
-          {
-            x: this.state.stats.prediction.tfo.agent.duration, 
-            type: 'histogram', 
-            histnorm: 'probability', 
-            name: 'prediction', 
-            xbins: { 
-              end: this.state.tfoBinEnd,
-              size: this.state.tfoBinSize,
-              start: 0,
-            }
-          }]}
-      />
-    )
-  }
+		let data = [];
+		if (this.state.stats.baseline !== undefined) {
+			data.push({
+				x: this.state.stats.baseline.tfo.agent.tfo,
+				type: "histogram",
+				histnorm: "probability",
+				name: "baseline",
+				xbins: {
+					end: this.state.tfoBinEnd,
+					size: this.state.tfoBinSize,
+					start: 0,
+				},
+			});
+		}
 
-  getGrades() {
-    if (this.state.stats === null || this.state.stats === undefined) {
-      return
-    }
+		if (this.state.stats.prediction !== undefined) {
+			data.push({
+				x: this.state.stats.prediction.tfo.agent.tfo,
+				type: "histogram",
+				histnorm: "probability",
+				name: "prediction",
+				xbins: {
+					end: this.state.tfoBinEnd,
+					size: this.state.tfoBinSize,
+					start: 0,
+				},
+			});
+		}
 
-    let y = ['responsiveness', 'natural', 'enjoyment'];
-    let baseline_x = [
-      this.state.stats.baseline.grades.responsiveness.mean,
-      this.state.stats.baseline.grades.natural.mean,
-      this.state.stats.baseline.grades.enjoyment.mean,
-    ]
-    let baselinevad_x = [
-      this.state.stats.baselinevad.grades.responsiveness.mean,
-      this.state.stats.baselinevad.grades.natural.mean,
-      this.state.stats.baselinevad.grades.enjoyment.mean,
-    ]
-    let prediction_x = [
-      this.state.stats.prediction.grades.responsiveness.mean,
-      this.state.stats.prediction.grades.natural.mean,
-      this.state.stats.prediction.grades.enjoyment.mean,
-    ]
+		if (this.state.stats.baselinevad !== undefined) {
+			data.push({
+				x: this.state.stats.baselinevad.tfo.agent.tfo,
+				type: "histogram",
+				histnorm: "probability",
+				name: "baselinevad",
+				xbins: {
+					end: this.state.tfoBinEnd,
+					size: this.state.tfoBinSize,
+					start: 0,
+				},
+			});
+		}
 
-    console.log(baseline_x)
-    return (
-      <Plot
-        data={[
-          { y: baseline_x, x: y, type: 'bar', name: 'baseline'},
-          { y: baselinevad_x, x: y, type: 'bar', name: 'baselinevad'},
-          { y: prediction_x, x: y, type: 'bar', name: 'prediction'},
-      ]}
-      />
+		return <Plot data={data} />;
+	}
 
-    )
-  }
+	getGrades() {
+		if (this.state.stats === null || this.state.stats === undefined) {
+			return;
+		}
 
-  getAnnotation() {
-    if (this.state.stats === null ) {
-      return
-    }
-    console.log(this.state.stats.baseline.anno)
-    console.log(this.state.stats.prediction.anno)
+		let y = ["responsiveness", "natural", "enjoyment"];
 
-    let y = ['interruption', 'missed-eot'];
-    let baseline_x = [
-      this.state.stats.baseline.anno.interruption.mean,
-      this.state.stats.baseline.anno.missed_eot.mean,
-    ]
-    let baselinevad_x = [
-      this.state.stats.baselinevad.anno.interruption.mean,
-      this.state.stats.baselinevad.anno.missed_eot.mean,
-    ]
-    let prediction_x = [
-      this.state.stats.prediction.anno.interruption.mean,
-      this.state.stats.prediction.anno.missed_eot.mean,
-    ]
+		let data = [];
+		try {
+			let baseline_x = [
+				this.state.stats.baseline.grades.responsiveness.mean,
+				this.state.stats.baseline.grades.natural.mean,
+				this.state.stats.baseline.grades.enjoyment.mean,
+			];
+			data.push({ y: baseline_x, x: y, type: "bar", name: "baseline" });
+		} catch (err) {
+			console.log("baseline grades not found");
+		}
 
-    console.log(baseline_x)
-    return (
-      <Plot
-        data={[
-          { y: baseline_x, x: y, type: 'bar', name: 'baseline'},
-          { y: baselinevad_x, x: y, type: 'bar', name: 'baselinevad'},
-          { y: prediction_x, x: y, type: 'bar', name: 'prediction'},
-      ]}
-      />
+		try {
+			let baselinevad_x = [
+				this.state.stats.baselinevad.grades.responsiveness.mean,
+				this.state.stats.baselinevad.grades.natural.mean,
+				this.state.stats.baselinevad.grades.enjoyment.mean,
+			];
+			data.push({ y: baselinevad_x, x: y, type: "bar", name: "baselinevad" });
+		} catch (err) {
+			console.log("baselinevad grades not found");
+		}
 
-    )
-  }
+		try {
+			let prediction_x = [
+				this.state.stats.prediction.grades.responsiveness.mean,
+				this.state.stats.prediction.grades.natural.mean,
+				this.state.stats.prediction.grades.enjoyment.mean,
+			];
+			data.push({ y: prediction_x, x: y, type: "bar", name: "prediction" });
+		} catch (err) {
+			console.log("baselinevad grades not found");
+		}
+		return <Plot data={data} />;
+	}
 
+	getAnnotation() {
+		if (this.state.stats === null) {
+			return;
+		}
 
-  render () {
-    const tfo = this.getTFO();
-    const grades = this.getGrades();
-    const anno = this.getAnnotation();
-    return (
-      <Container fluid style={{background: '#778ca3', textAlign: 'center'}}>
-        <Col>
-          <h3>TFO</h3>
-          {tfo}
-          <h3>Grades</h3>
-          {grades}
-          <h3>Anno</h3>
-          {anno}
-        </Col>
-      </Container >
-    );
-  }
+		let y = ["interruption", "missed-eot"];
+
+		let data = [];
+		try {
+			let baseline_x = [
+				this.state.stats.baseline.anno.interruption.mean,
+				this.state.stats.baseline.anno.missed_eot.mean,
+			];
+			data.push({ y: baseline_x, x: y, type: "bar", name: "baseline" });
+		} catch (err) {
+			console.log("baseline anno not found");
+		}
+
+		try {
+			let baselinevad_x = [
+				this.state.stats.baselinevad.anno.interruption.mean,
+				this.state.stats.baselinevad.anno.missed_eot.mean,
+			];
+			data.push({ y: baselinevad_x, x: y, type: "bar", name: "baselinevad" });
+		} catch (err) {
+			console.log("baselinevad anno not found");
+		}
+
+		try {
+			let prediction_x = [
+				this.state.stats.prediction.anno.interruption.mean,
+				this.state.stats.prediction.anno.missed_eot.mean,
+			];
+			data.push({ y: prediction_x, x: y, type: "bar", name: "prediction" });
+		} catch (err) {
+			console.log("prediction anno not found");
+		}
+
+		return <Plot data={data} />;
+	}
+
+	render() {
+		const tfo = this.getTFO();
+		const grades = this.getGrades();
+		const anno = this.getAnnotation();
+		// const grades = null;
+		// const anno = null;
+		// console.log(this.state.stats)
+		return (
+			<Container fluid style={{ background: "#778ca3", textAlign: "center" }}>
+				<Row>
+					<Col>
+						<h3>TFO</h3>
+						{tfo}
+						<h3>Grades</h3>
+						{grades}
+						<h3>Anno</h3>
+						{anno}
+					</Col>
+				</Row>
+			</Container>
+		);
+	}
 }

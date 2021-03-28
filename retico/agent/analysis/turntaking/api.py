@@ -1,5 +1,5 @@
 from argparse import ArgumentParser
-from os.path import join
+from os.path import join, exists
 from os import makedirs, walk
 import time
 import flask
@@ -7,26 +7,33 @@ import flask
 
 from retico.agent.utils import read_json
 from retico.agent.analysis.analysis import Analysis, get_interaction_data
+from retico.agent.analysis.utils import read_audio
 from retico.agent.analysis.turntaking.api_utils import jsonify_data
 
+import torchaudio
 
-global aggregate_data
+
 global ROOT
-# global dialog
-# global hparams
-# global wav_file
-# global interaction
-# global all_turns
+global dialog_audio
+global aggregate_data
+global last_aggregate_root
 
-aggregate_data = None
 ROOT = ""
+dialog_audio = None
+last_aggregate_root = ""
+aggregate_data = None
 
 
 TMP = "/tmp/audio"
+CACHE = "/home/erik/.cache/agent/turn_audio"
 makedirs(TMP, exist_ok=True)
 
 
 app = flask.Flask(__name__)
+
+###############################################################
+# Files on system
+###############################################################
 
 
 @app.route("/api/roots", methods=["GET"])
@@ -43,6 +50,9 @@ def interactions():
     return ret
 
 
+###############################################################
+# Interaction Data
+###############################################################
 @app.route("/api/audio/<path:interaction>", methods=["GET"])
 def audio(interaction):
     wav_path = join(ROOT, interaction, "dialog.wav")
@@ -65,17 +75,49 @@ def turns(interaction):
     return turns
 
 
-@app.route("/api/turn_audio/<idx>", methods=["GET"])
-def turn_audio(idx=None):
-    if idx is not None:
-        return flask.send_file(join(TMP, f"turn_{idx}.wav"))
-    else:
-        return "error"
+@app.route(
+    "/api/turn_audio/<idx>/<start_time>/<end_time>/<path:interaction>", methods=["GET"]
+)
+def turn_audio(idx=None, start_time=None, end_time=None, interaction=None):
+    global dialog_audio
 
+    if (
+        idx is not None
+        and start_time is not None
+        and end_time is not None
+        and interaction is not None
+    ):
 
-#########################################################
-# Single
-#########################################################
+        dirpath = join(CACHE, interaction)
+        makedirs(dirpath, exist_ok=True)
+        audiopath = join(dirpath, f"turn_{idx}.wav")
+
+        if not exists(audiopath):
+            start_time = float(start_time)
+            end_time = float(end_time)
+            if dialog_audio is None:
+                wav_path = join(ROOT, interaction, "dialog.wav")
+                dialog_audio = read_audio(wav_path)
+                print("Interaction: ", interaction)
+                print("idx: ", idx)
+                print("start: ", start_time)
+                print("end: ", end_time)
+                print("waveform: ", dialog_audio["waveform"].shape)
+
+            sr = dialog_audio["sample_rate"]
+            s = int(start_time * sr)
+            s -= int(0.5 * sr)
+            if s < 0:
+                s = 0
+            e = int(end_time * sr)
+            e += int(0.5 * sr)
+            print("START: ", s, type(s))
+            print("END: ", e, type(e))
+            x = dialog_audio["waveform"][:, s:e]
+            torchaudio.save(audiopath, src=x, sample_rate=sr)
+        print("PATH: ", audiopath)
+        return flask.send_file(audiopath)
+    return "error"
 
 
 @app.route("/api/interaction/<data>/<path:interaction>", methods=["GET"])
@@ -109,15 +151,18 @@ def interaction_data(data=None, interaction=None):
 #########################################################
 # AGGREGATE
 #########################################################
-@app.route("/api/aggregate/<name>", methods=["GET"])
-def aggregate(name):
-    if name == "stats":
-        global aggregate_data
-        if aggregate_data is None:
-            aggregate_data = Analysis.aggregate(ROOT)
+@app.route("/api/aggregate/<path:root>", methods=["GET"])
+def aggregate(root):
+    global last_aggregate_root
+    global aggregate_data
+    print("root: ", root)
+
+    if root == last_aggregate_root and aggregate_data is not None:
         return aggregate_data
     else:
-        return "error"
+        last_aggregate_root = root
+        aggregate_data = Analysis.aggregate(ROOT)
+        return aggregate_data
 
 
 if __name__ == "__main__":
